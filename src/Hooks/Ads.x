@@ -9,10 +9,15 @@
 
 static char kBHTHiddenAdCellKey;
 
+static const char* BHTUnqualifiedType(const char* type) {
+    while (type && strchr("rnNoORV", type[0])) type++;
+    return type;
+}
+
 static id BHTObjectForSelector(id object, SEL selector) {
     if (!object || !selector || ![object respondsToSelector:selector]) return nil;
     NSMethodSignature* signature = [object methodSignatureForSelector:selector];
-    const char* returnType = signature.methodReturnType;
+    const char* returnType = BHTUnqualifiedType(signature.methodReturnType);
     if (!returnType || returnType[0] != '@') return nil;
     return ((id (*)(id, SEL))objc_msgSend)(object, selector);
 }
@@ -20,7 +25,7 @@ static id BHTObjectForSelector(id object, SEL selector) {
 static BOOL BHTBoolForSelector(id object, SEL selector) {
     if (!object || !selector || ![object respondsToSelector:selector]) return NO;
     NSMethodSignature* signature = [object methodSignatureForSelector:selector];
-    const char* returnType = signature.methodReturnType;
+    const char* returnType = BHTUnqualifiedType(signature.methodReturnType);
     if (!returnType) return NO;
     if (returnType[0] == '@') {
         return [((id (*)(id, SEL))objc_msgSend)(object, selector) boolValue];
@@ -66,6 +71,97 @@ static BOOL BHTClassNameMarksPromotion(NSString* className) {
            [lower hasSuffix:@"advertisementviewmodel"] ||
            [lower hasSuffix:@"adviewmodel"] ||
            [lower hasSuffix:@"adcell"];
+}
+
+static id BHTSafeValueForKey(id object, NSString* key) {
+    if (!object || key.length == 0) return nil;
+    @try {
+        return [object valueForKey:key];
+    } @catch (__unused NSException* exception) {
+        return nil;
+    }
+}
+
+// X 12.9's status item is Swift-backed and its status storage has changed
+// names across releases. Follow only promotion/status-shaped properties and
+// object ivars so the detector remains bounded and does not inspect post text.
+static BOOL BHTNestedObjectMarksPromotion(id object, NSUInteger depth) {
+    if (!object || depth > 2) return NO;
+    NSString* className = NSStringFromClass([object classForCoder]);
+    if (BHTClassNameMarksPromotion(className) ||
+        BHTBoolForSelector(object, @selector(isPromoted)) ||
+        BHTBoolForSelector(object, NSSelectorFromString(@"isAd")) ||
+        BHTBoolForSelector(object, NSSelectorFromString(@"isAdvertisement")) ||
+        BHTBoolForSelector(object, NSSelectorFromString(@"isSponsored"))) {
+        return YES;
+    }
+    if ([object isKindOfClass:NSDictionary.class] &&
+        BHTDictionaryMarksPromotion(object)) {
+        return YES;
+    }
+    if ([object isKindOfClass:NSString.class] ||
+        [object isKindOfClass:NSNumber.class] ||
+        [object isKindOfClass:NSArray.class] ||
+        [object isKindOfClass:NSSet.class]) {
+        return NO;
+    }
+
+    NSArray<NSString*>* keys = @[
+        @"status", @"tweet", @"twitterStatus", @"displayedStatus",
+        @"statusModel", @"statusDataSource", @"dataSource", @"model",
+        @"item", @"content", @"scribeItem", @"scribeParameters",
+        @"promotedContent", @"promotedMetadata", @"adMetadata",
+        @"advertiser"
+    ];
+    for (NSString* key in keys) {
+        id value = BHTSafeValueForKey(object, key);
+        if (!value || value == object) continue;
+        NSString* lowerKey = key.lowercaseString;
+        if (([lowerKey containsString:@"promoted"] ||
+             [lowerKey containsString:@"advertiser"] ||
+             [lowerKey containsString:@"admetadata"]) &&
+            BHTValueMarksPromotion(value)) {
+            return YES;
+        }
+        if (BHTNestedObjectMarksPromotion(value, depth + 1)) return YES;
+    }
+
+    for (Class current = [object class]; current && current != NSObject.class;
+         current = class_getSuperclass(current)) {
+        unsigned int count = 0;
+        Ivar* ivars = class_copyIvarList(current, &count);
+        for (unsigned int index = 0; index < count; index++) {
+            const char* type = BHTUnqualifiedType(ivar_getTypeEncoding(ivars[index]));
+            if (!type || type[0] != '@') continue;
+            const char* rawName = ivar_getName(ivars[index]);
+            NSString* name = rawName
+                                 ? [[NSString stringWithUTF8String:rawName]
+                                       lowercaseString]
+                                 : @"";
+            BOOL relevant = [name containsString:@"status"] ||
+                            [name containsString:@"tweet"] ||
+                            [name containsString:@"promoted"] ||
+                            [name containsString:@"advert"] ||
+                            [name containsString:@"scribe"] ||
+                            [name containsString:@"model"] ||
+                            [name containsString:@"content"];
+            if (!relevant) continue;
+            id value = object_getIvar(object, ivars[index]);
+            if (!value || value == object) continue;
+            if (([name containsString:@"promoted"] ||
+                 [name containsString:@"advert"]) &&
+                BHTValueMarksPromotion(value)) {
+                free(ivars);
+                return YES;
+            }
+            if (BHTNestedObjectMarksPromotion(value, depth + 1)) {
+                free(ivars);
+                return YES;
+            }
+        }
+        free(ivars);
+    }
+    return NO;
 }
 
 // Timeline items are removed from the section data before it reaches the data
@@ -171,7 +267,9 @@ static BOOL ShouldHideItem(id item, NSString* location) {
         }
 
         if (StatusItemIsPromoted(item) || BHTClassNameMarksPromotion(className) ||
-            ScribeItemIsPromoted(item)) {
+            ScribeItemIsPromoted(item) ||
+            ([className isEqualToString:@"T1URTTimelineStatusItemViewModel"] &&
+             BHTNestedObjectMarksPromotion(item, 0))) {
             return YES;
         }
 
@@ -386,34 +484,67 @@ static id BHTItemAtIndexPath(TFNItemsDataViewController* controller,
 
 %end
 
-%group BHTGoogleNativeAdCellHooks
+// Swift ad-cell classes may not exist when tweak constructors run. Hooking the
+// UIKit base class instead catches them whenever their module is loaded, while
+// the class-name guard keeps normal collection cells untouched.
+static BOOL BHTIsRenderedAdCell(id cell) {
+    return [BHTSettings boolForKey:@"hide_promoted"] &&
+           BHTClassNameMarksPromotion(NSStringFromClass([cell classForCoder]));
+}
 
-%hook BHTGoogleNativeAdCell
+static void BHTCollapseRenderedAdCell(UICollectionViewCell* cell) {
+    if (!BHTIsRenderedAdCell(cell)) return;
+    cell.hidden = YES;
+    cell.alpha = 0.0;
+    cell.userInteractionEnabled = NO;
+    BHTRecordTimelineItemObservation(cell, @"RENDERED_COLLECTION_CELL", YES);
+}
+
+%hook UICollectionViewCell
 
 - (void)didMoveToWindow {
     %orig;
-    if ([BHTSettings boolForKey:@"hide_promoted"]) {
-        UIView* view = (UIView*)self;
-        view.hidden = YES;
-        view.userInteractionEnabled = NO;
-    }
+    BHTCollapseRenderedAdCell(self);
+}
+
+- (void)layoutSubviews {
+    %orig;
+    BHTCollapseRenderedAdCell(self);
 }
 
 - (CGSize)sizeThatFits:(CGSize)size {
-    return [BHTSettings boolForKey:@"hide_promoted"] ? CGSizeZero : %orig;
+    return BHTIsRenderedAdCell(self) ? CGSizeZero : %orig;
 }
 
 - (UICollectionViewLayoutAttributes*)preferredLayoutAttributesFittingAttributes:
     (UICollectionViewLayoutAttributes*)attributes {
     UICollectionViewLayoutAttributes* result = %orig;
-    if ([BHTSettings boolForKey:@"hide_promoted"] && result) {
+    if (BHTIsRenderedAdCell(self) && result) {
         result.size = CGSizeZero;
         result.hidden = YES;
     }
     return result;
 }
 
-%end
+- (void)applyLayoutAttributes:(UICollectionViewLayoutAttributes*)attributes {
+    if (BHTIsRenderedAdCell(self)) {
+        UICollectionViewLayoutAttributes* collapsed = [attributes copy];
+        collapsed.size = CGSizeZero;
+        collapsed.hidden = YES;
+        %orig(collapsed);
+        BHTCollapseRenderedAdCell(self);
+        return;
+    }
+    %orig;
+}
+
+- (void)setHidden:(BOOL)hidden {
+    %orig(BHTIsRenderedAdCell(self) ? YES : hidden);
+}
+
+- (void)setAlpha:(CGFloat)alpha {
+    %orig(BHTIsRenderedAdCell(self) ? 0.0 : alpha);
+}
 
 %end
 
@@ -470,13 +601,3 @@ static id BHTItemAtIndexPath(TFNItemsDataViewController* controller,
 }
 
 %end
-
-%ctor {
-    %init;
-    Class googleNativeAdCell =
-        NSClassFromString(@"T1TwitterSwift.GoogleNativeAdCell");
-    if (googleNativeAdCell) {
-        %init(BHTGoogleNativeAdCellHooks,
-              BHTGoogleNativeAdCell = googleNativeAdCell);
-    }
-}

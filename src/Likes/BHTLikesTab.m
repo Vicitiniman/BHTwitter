@@ -127,7 +127,10 @@ static UIViewController* BHTMakeNativeLikesController(id account) {
             invocation.target = bridge;
             invocation.selector = bridgeSelector;
             id accountArgument = account;
-            NSInteger likesTab = 1;
+            // Activity History orders Bookmarks, Videos, Articles, then Likes.
+            // The X 12.9 compatibility report confirms this fallback is the
+            // available factory on-device, so select the fourth tab directly.
+            NSInteger likesTab = 3;
             [invocation setArgument:&accountArgument atIndex:2];
             [invocation setArgument:&likesTab atIndex:3];
             [invocation invoke];
@@ -147,6 +150,9 @@ static UIViewController* BHTMakeNativeLikesController(id account) {
 @property(nonatomic, strong) NSURL* originalURL;
 @property(nonatomic, strong) NSURL* videoURL;
 @property(nonatomic) CGFloat aspectRatio;
+@property(nonatomic) long long statusID;
+@property(nonatomic, copy) NSString* statusText;
+@property(nonatomic, strong) NSURL* statusURL;
 @end
 
 @implementation BHTLikedMediaItem
@@ -236,6 +242,30 @@ static id BHTStatusFromItem(id item) {
     return nil;
 }
 
+static NSString* BHTReadableStatusText(id status) {
+    for (NSString* key in @[@"fullText", @"text", @"displayText", @"tweetText"]) {
+        id value = BHTSafeValue(status, key);
+        if ([value isKindOfClass:NSString.class] && [value length] > 0) {
+            return value;
+        }
+        if ([value isKindOfClass:NSAttributedString.class] &&
+            [value string].length > 0) {
+            return [value string];
+        }
+        id string = BHTSafeValue(value, @"string");
+        if ([string isKindOfClass:NSString.class] && [string length] > 0) {
+            return string;
+        }
+    }
+    return nil;
+}
+
+static NSURL* BHTStatusURL(long long statusID) {
+    if (statusID <= 0) return nil;
+    return [NSURL URLWithString:
+        [NSString stringWithFormat:@"https://x.com/i/status/%lld", statusID]];
+}
+
 static NSArray<BHTLikedMediaItem*>* BHTMediaItemsFromSections(NSArray* sections) {
     NSMutableArray<BHTLikedMediaItem*>* result = [NSMutableArray array];
     NSMutableSet<NSString*>* identifiers = [NSMutableSet set];
@@ -278,6 +308,9 @@ static NSArray<BHTLikedMediaItem*>* BHTMediaItemsFromSections(NSArray* sections)
                 model.originalURL = originalURL ?: model.previewURL;
                 model.videoURL = videoURL;
                 model.aspectRatio = (width > 0 && height > 0) ? width / height : 1.0;
+                model.statusID = statusID;
+                model.statusText = BHTReadableStatusText(status);
+                model.statusURL = BHTStatusURL(statusID);
                 [result addObject:model];
             }];
         }
@@ -420,17 +453,23 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
     return cache;
 }
 
-@interface BHTPhotoViewerController : UIViewController <UIScrollViewDelegate>
-- (instancetype)initWithItem:(BHTLikedMediaItem*)item;
+@interface BHTMediaPageController : UIViewController <UIScrollViewDelegate>
+- (instancetype)initWithItem:(BHTLikedMediaItem*)item index:(NSUInteger)index;
 @property(nonatomic, strong) BHTLikedMediaItem* item;
+@property(nonatomic) NSUInteger index;
 @property(nonatomic, strong) UIScrollView* scrollView;
 @property(nonatomic, strong) UIImageView* imageView;
+@property(nonatomic, strong) UIButton* playButton;
+@property(nonatomic, strong) NSURLSessionDataTask* task;
 @end
 
-@implementation BHTPhotoViewerController
+@implementation BHTMediaPageController
 
-- (instancetype)initWithItem:(BHTLikedMediaItem*)item {
-    if ((self = [super init])) _item = item;
+- (instancetype)initWithItem:(BHTLikedMediaItem*)item index:(NSUInteger)index {
+    if ((self = [super init])) {
+        _item = item;
+        _index = index;
+    }
     return self;
 }
 
@@ -441,6 +480,7 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
     self.scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.scrollView.minimumZoomScale = 1;
     self.scrollView.maximumZoomScale = 6;
+    self.scrollView.directionalLockEnabled = YES;
     self.scrollView.delegate = self;
     [self.view addSubview:self.scrollView];
     self.imageView = [[UIImageView alloc] initWithFrame:self.scrollView.bounds];
@@ -448,23 +488,240 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
     self.imageView.contentMode = UIViewContentModeScaleAspectFit;
     [self.scrollView addSubview:self.imageView];
 
-    UIImage* cached = [BHTMediaImageCache() objectForKey:self.item.originalURL];
+    NSURL* imageURL = self.item.originalURL ?: self.item.previewURL;
+    UIImage* cached = imageURL ? [BHTMediaImageCache() objectForKey:imageURL] : nil;
     if (cached) {
         self.imageView.image = cached;
-    } else {
+    } else if (imageURL) {
         __weak typeof(self) weakSelf = self;
-        NSURL* imageURL = self.item.originalURL;
-        [[[NSURLSession sharedSession] dataTaskWithURL:imageURL
-                                    completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+        self.task = [[NSURLSession sharedSession]
+            dataTaskWithURL:imageURL
+          completionHandler:^(NSData* data, NSURLResponse* response,
+                              NSError* error) {
             UIImage* image = data ? [UIImage imageWithData:data] : nil;
             if (image) [BHTMediaImageCache() setObject:image forKey:imageURL];
             dispatch_async(dispatch_get_main_queue(), ^{ weakSelf.imageView.image = image; });
-        }] resume];
+        }];
+        [self.task resume];
+    }
+
+    if (self.item.videoURL) {
+        self.scrollView.maximumZoomScale = 1;
+        self.playButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        self.playButton.translatesAutoresizingMaskIntoConstraints = NO;
+        UIImageSymbolConfiguration* configuration =
+            [UIImageSymbolConfiguration configurationWithPointSize:56
+                                                            weight:UIImageSymbolWeightRegular];
+        [self.playButton setImage:
+             [UIImage systemImageNamed:@"play.circle.fill"
+                         withConfiguration:configuration]
+                         forState:UIControlStateNormal];
+        self.playButton.tintColor = UIColor.whiteColor;
+        self.playButton.accessibilityLabel = @"Play video";
+        [self.playButton addTarget:self
+                            action:@selector(playVideo:)
+                  forControlEvents:UIControlEventTouchUpInside];
+        [self.view addSubview:self.playButton];
+        [NSLayoutConstraint activateConstraints:@[
+            [self.playButton.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+            [self.playButton.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor]
+        ]];
     }
 }
 
+- (void)dealloc {
+    [self.task cancel];
+}
+
+- (void)playVideo:(id)sender {
+    if (!self.item.videoURL) return;
+    AVPlayerViewController* player = [AVPlayerViewController new];
+    player.player = [AVPlayer playerWithURL:self.item.videoURL];
+    [self presentViewController:player
+                       animated:YES
+                     completion:^{ [player.player play]; }];
+}
+
 - (UIView*)viewForZoomingInScrollView:(UIScrollView*)scrollView {
-    return self.imageView;
+    return self.item.videoURL ? nil : self.imageView;
+}
+
+@end
+
+@interface BHTMediaPagerController : UIViewController <UIPageViewControllerDataSource,
+                                                        UIPageViewControllerDelegate>
+- (instancetype)initWithItems:(NSMutableArray<BHTLikedMediaItem*>*)items
+                  initialIndex:(NSUInteger)index;
+@property(nonatomic, strong) NSMutableArray<BHTLikedMediaItem*>* items;
+@property(nonatomic) NSUInteger currentIndex;
+@property(nonatomic) NSUInteger knownItemCount;
+@property(nonatomic, strong) UIPageViewController* pageController;
+@property(nonatomic, strong) UIButton* postButton;
+@property(nonatomic, copy) dispatch_block_t loadMoreHandler;
+- (BHTMediaPageController*)pageAtIndex:(NSUInteger)index;
+- (BHTLikedMediaItem*)currentItem;
+- (void)updatePostButton;
+- (void)requestMoreIfNeededAtIndex:(NSUInteger)index;
+- (void)mediaItemsDidUpdate;
+@end
+
+@implementation BHTMediaPagerController
+
+- (instancetype)initWithItems:(NSMutableArray<BHTLikedMediaItem*>*)items
+                  initialIndex:(NSUInteger)index {
+    if ((self = [super init])) {
+        _items = items;
+        _currentIndex = MIN(index, items.count > 0 ? items.count - 1 : 0);
+        _knownItemCount = items.count;
+        self.title = @"Liked media";
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = UIColor.blackColor;
+
+    self.pageController = [[UIPageViewController alloc]
+        initWithTransitionStyle:UIPageViewControllerTransitionStyleScroll
+          navigationOrientation:UIPageViewControllerNavigationOrientationHorizontal
+                        options:nil];
+    self.pageController.dataSource = self;
+    self.pageController.delegate = self;
+    [self addChildViewController:self.pageController];
+    self.pageController.view.frame = self.view.bounds;
+    self.pageController.view.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:self.pageController.view];
+    [self.pageController didMoveToParentViewController:self];
+
+    BHTMediaPageController* initial = [self pageAtIndex:self.currentIndex];
+    if (initial) {
+        [self.pageController setViewControllers:@[initial]
+                                      direction:UIPageViewControllerNavigationDirectionForward
+                                       animated:NO
+                                     completion:nil];
+    }
+
+    self.postButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.postButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.postButton.backgroundColor = [UIColor colorWithWhite:0 alpha:0.72];
+    self.postButton.tintColor = UIColor.whiteColor;
+    [self.postButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    self.postButton.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    self.postButton.titleLabel.numberOfLines = 4;
+    self.postButton.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.postButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    self.postButton.contentEdgeInsets = UIEdgeInsetsMake(10, 12, 10, 12);
+    self.postButton.layer.cornerRadius = 12;
+    self.postButton.clipsToBounds = YES;
+    [self.postButton addTarget:self
+                        action:@selector(openCurrentPost:)
+              forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.postButton];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.postButton.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
+        [self.postButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
+        [self.postButton.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-12],
+        [self.postButton.heightAnchor constraintGreaterThanOrEqualToConstant:44],
+        [self.postButton.heightAnchor constraintLessThanOrEqualToConstant:116]
+    ]];
+    [self updatePostButton];
+    [self requestMoreIfNeededAtIndex:self.currentIndex];
+}
+
+- (BHTMediaPageController*)pageAtIndex:(NSUInteger)index {
+    if (index >= self.items.count) return nil;
+    return [[BHTMediaPageController alloc] initWithItem:self.items[index]
+                                                  index:index];
+}
+
+- (BHTLikedMediaItem*)currentItem {
+    return self.currentIndex < self.items.count ? self.items[self.currentIndex] : nil;
+}
+
+- (void)updatePostButton {
+    BHTLikedMediaItem* item = [self currentItem];
+    NSString* text = [item.statusText
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString* title = text.length > 0
+                          ? [NSString stringWithFormat:@"%@\nView post on X", text]
+                          : @"View post on X";
+    [self.postButton setTitle:title forState:UIControlStateNormal];
+    self.postButton.enabled = item.statusID > 0 || item.statusURL != nil;
+    self.postButton.accessibilityHint = @"Opens the original liked post";
+}
+
+- (void)requestMoreIfNeededAtIndex:(NSUInteger)index {
+    if (!self.loadMoreHandler || self.items.count == 0) return;
+    if (self.items.count - MIN(index, self.items.count - 1) <= 8) {
+        dispatch_async(dispatch_get_main_queue(), self.loadMoreHandler);
+    }
+}
+
+- (void)mediaItemsDidUpdate {
+    if (!self.isViewLoaded || self.items.count == 0) return;
+    NSUInteger previousCount = self.knownItemCount;
+    self.knownItemCount = self.items.count;
+    self.currentIndex = MIN(self.currentIndex, self.items.count - 1);
+    if (previousCount == 0 || self.currentIndex + 1 >= previousCount) {
+        BHTMediaPageController* current = [self pageAtIndex:self.currentIndex];
+        [self.pageController setViewControllers:@[current]
+                                          direction:UIPageViewControllerNavigationDirectionForward
+                                           animated:NO
+                                         completion:nil];
+    }
+    [self updatePostButton];
+}
+
+- (void)openCurrentPost:(id)sender {
+    BHTLikedMediaItem* item = [self currentItem];
+    if (!item) return;
+    NSURL* appURL = item.statusID > 0
+                        ? [NSURL URLWithString:
+                              [NSString stringWithFormat:@"twitter://status?id=%lld",
+                                                         item.statusID]]
+                        : nil;
+    UIApplication* application = UIApplication.sharedApplication;
+    if (!appURL) {
+        if (item.statusURL) {
+            [application openURL:item.statusURL options:@{} completionHandler:nil];
+        }
+        return;
+    }
+    NSURL* fallback = item.statusURL;
+    [application openURL:appURL
+                  options:@{}
+        completionHandler:^(BOOL success) {
+            if (!success && fallback) {
+                [application openURL:fallback options:@{} completionHandler:nil];
+            }
+        }];
+}
+
+- (UIViewController*)pageViewController:(UIPageViewController*)pageViewController
+      viewControllerBeforeViewController:(UIViewController*)viewController {
+    NSUInteger index = ((BHTMediaPageController*)viewController).index;
+    return index > 0 ? [self pageAtIndex:index - 1] : nil;
+}
+
+- (UIViewController*)pageViewController:(UIPageViewController*)pageViewController
+       viewControllerAfterViewController:(UIViewController*)viewController {
+    NSUInteger index = ((BHTMediaPageController*)viewController).index;
+    [self requestMoreIfNeededAtIndex:index];
+    return index + 1 < self.items.count ? [self pageAtIndex:index + 1] : nil;
+}
+
+- (void)pageViewController:(UIPageViewController*)pageViewController
+        didFinishAnimating:(BOOL)finished
+   previousViewControllers:(NSArray<UIViewController*>*)previousViewControllers
+       transitionCompleted:(BOOL)completed {
+    if (!completed) return;
+    BHTMediaPageController* visible =
+        (BHTMediaPageController*)pageViewController.viewControllers.firstObject;
+    self.currentIndex = visible.index;
+    [self updatePostButton];
+    [self requestMoreIfNeededAtIndex:self.currentIndex];
 }
 
 @end
@@ -480,17 +737,34 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
 @property(nonatomic, strong) BHTWaterfallLayout* waterfallLayout;
 @property(nonatomic, strong) NSMutableArray<BHTLikedMediaItem*>* mediaItems;
 @property(nonatomic, strong) NSMutableSet<NSString*>* mediaIDs;
+@property(nonatomic, weak) BHTMediaPagerController* activeMediaPager;
 @property(nonatomic) BOOL requestedMore;
+@property(nonatomic) NSUInteger loadRequestGeneration;
 - (void)ingestSections:(NSArray*)sections;
+- (void)loadMoreMedia;
 @end
 
-static UIScrollView* BHTFindScrollableView(UIView* view) {
-    if ([view isKindOfClass:UIScrollView.class]) return (UIScrollView*)view;
-    for (UIView* subview in view.subviews) {
-        UIScrollView* result = BHTFindScrollableView(subview);
-        if (result) return result;
+static void BHTFindVerticalScrollView(UIView* view, UIScrollView** best,
+                                      CGFloat* bestScore) {
+    if ([view isKindOfClass:UIScrollView.class]) {
+        UIScrollView* scroll = (UIScrollView*)view;
+        CGFloat range = scroll.contentSize.height - scroll.bounds.size.height;
+        CGFloat score = MAX(0, range) + scroll.bounds.size.height / 1000.0;
+        if (!*best || score > *bestScore) {
+            *best = scroll;
+            *bestScore = score;
+        }
     }
-    return nil;
+    for (UIView* subview in view.subviews) {
+        BHTFindVerticalScrollView(subview, best, bestScore);
+    }
+}
+
+static UIScrollView* BHTFindScrollableView(UIView* view) {
+    UIScrollView* best = nil;
+    CGFloat bestScore = -1;
+    BHTFindVerticalScrollView(view, &best, &bestScore);
+    return best;
 }
 
 @implementation BHTLikesViewController
@@ -558,8 +832,17 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
 
 - (void)selectionChanged:(UISegmentedControl*)sender {
     BOOL media = sender.selectedSegmentIndex == 1;
-    self.postsController.view.hidden = media;
+    // Keep the native Likes timeline alive behind the opaque media grid. X
+    // pauses pagination for hidden controller views, which previously forced
+    // users to return to Posts and scroll manually before more media appeared.
+    self.postsController.view.hidden = NO;
+    self.postsController.view.userInteractionEnabled = !media;
+    self.postsController.view.accessibilityElementsHidden = media;
     self.collectionView.hidden = !media;
+    if (media) {
+        [self.view bringSubviewToFront:self.collectionView];
+        if (self.mediaItems.count < 12) [self loadMoreMedia];
+    }
 }
 
 - (void)pinched:(UIPinchGestureRecognizer*)pinch {
@@ -578,8 +861,12 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
         [self.mediaItems addObject:item];
         changed = YES;
     }
+    self.loadRequestGeneration++;
     self.requestedMore = NO;
-    if (changed && self.isViewLoaded) [self.collectionView reloadData];
+    if (changed && self.isViewLoaded) {
+        [self.collectionView reloadData];
+        [self.activeMediaPager mediaItemsDidUpdate];
+    }
 }
 
 - (NSInteger)collectionView:(UICollectionView*)collectionView numberOfItemsInSection:(NSInteger)section {
@@ -619,28 +906,63 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
 }
 
 - (void)collectionView:(UICollectionView*)collectionView didSelectItemAtIndexPath:(NSIndexPath*)indexPath {
-    BHTLikedMediaItem* item = self.mediaItems[indexPath.item];
-    if (item.videoURL) {
-        AVPlayerViewController* player = [AVPlayerViewController new];
-        player.player = [AVPlayer playerWithURL:item.videoURL];
-        [self presentViewController:player animated:YES completion:^{ [player.player play]; }];
+    BHTMediaPagerController* viewer =
+        [[BHTMediaPagerController alloc] initWithItems:self.mediaItems
+                                          initialIndex:indexPath.item];
+    __weak typeof(self) weakSelf = self;
+    viewer.loadMoreHandler = ^{ [weakSelf loadMoreMedia]; };
+    self.activeMediaPager = viewer;
+    [self.navigationController pushViewController:viewer animated:YES];
+}
+
+- (void)collectionView:(UICollectionView*)collectionView
+        willDisplayCell:(UICollectionViewCell*)cell
+  forItemAtIndexPath:(NSIndexPath*)indexPath {
+    if (self.mediaItems.count - indexPath.item <= 8) [self loadMoreMedia];
+}
+
+- (void)loadMoreMedia {
+    if (self.requestedMore || !self.postsController) return;
+    self.postsController.view.hidden = NO;
+    UIScrollView* nativeScroll = BHTFindScrollableView(self.postsController.view);
+    if (!nativeScroll) return;
+
+    CGFloat top = -nativeScroll.adjustedContentInset.top;
+    CGFloat bottom = MAX(top,
+        nativeScroll.contentSize.height - nativeScroll.bounds.size.height +
+            nativeScroll.adjustedContentInset.bottom);
+    if (bottom <= top + 1) return;
+
+    self.requestedMore = YES;
+    NSUInteger generation = ++self.loadRequestGeneration;
+    void (^scrollToBottom)(void) = ^{
+        [nativeScroll setContentOffset:
+            CGPointMake(nativeScroll.contentOffset.x, bottom) animated:NO];
+    };
+    if (fabs(nativeScroll.contentOffset.y - bottom) < 1) {
+        CGFloat nudge = MAX(top, bottom - MAX(80, nativeScroll.bounds.size.height * 0.2));
+        [nativeScroll setContentOffset:
+            CGPointMake(nativeScroll.contentOffset.x, nudge) animated:NO];
+        dispatch_async(dispatch_get_main_queue(), scrollToBottom);
     } else {
-        BHTPhotoViewerController* viewer = [[BHTPhotoViewerController alloc] initWithItem:item];
-        [self.navigationController pushViewController:viewer animated:YES];
+        scrollToBottom();
     }
+
+    // A cursor can legitimately return no new posts. Release the throttle so
+    // another end-of-grid/page gesture can retry instead of getting stuck.
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
+                   dispatch_get_main_queue(), ^{
+        if (weakSelf.loadRequestGeneration == generation) {
+            weakSelf.requestedMore = NO;
+        }
+    });
 }
 
 - (void)scrollViewDidScroll:(UIScrollView*)scrollView {
     if (scrollView != self.collectionView || self.requestedMore || self.mediaItems.count == 0) return;
     CGFloat remaining = scrollView.contentSize.height - CGRectGetMaxY((CGRect){scrollView.contentOffset, scrollView.bounds.size});
-    if (remaining > 600) return;
-    UIScrollView* nativeScroll = BHTFindScrollableView(self.postsController.view);
-    if (nativeScroll.contentSize.height > nativeScroll.bounds.size.height) {
-        self.requestedMore = YES;
-        CGFloat y = MAX(-nativeScroll.adjustedContentInset.top,
-                        nativeScroll.contentSize.height - nativeScroll.bounds.size.height + nativeScroll.adjustedContentInset.bottom);
-        [nativeScroll setContentOffset:CGPointMake(nativeScroll.contentOffset.x, y) animated:NO];
-    }
+    if (remaining <= 900) [self loadMoreMedia];
 }
 
 @end

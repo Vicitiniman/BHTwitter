@@ -15,6 +15,54 @@ static NSObject* BHTObservationLock(void) {
     return lock;
 }
 
+static NSDictionary* BHTTimelineRuntimeShape(id item) {
+    NSMutableArray<NSString*>* selectors = [NSMutableArray array];
+    for (NSString* name in @[
+             @"isPromoted", @"isAd", @"isAdvertisement", @"isSponsored",
+             @"status", @"tweet", @"twitterStatus", @"displayedStatus",
+             @"scribeItem", @"scribeParameters", @"promotedContent",
+             @"promotedMetadata", @"adMetadata"
+         ]) {
+        if ([item respondsToSelector:NSSelectorFromString(name)]) {
+            [selectors addObject:name];
+        }
+    }
+
+    NSMutableArray<NSDictionary*>* ivars = [NSMutableArray array];
+    for (Class current = [item class]; current && current != NSObject.class;
+         current = class_getSuperclass(current)) {
+        unsigned int count = 0;
+        Ivar* list = class_copyIvarList(current, &count);
+        for (unsigned int index = 0; index < count; index++) {
+            const char* rawName = ivar_getName(list[index]);
+            NSString* name = rawName ? [NSString stringWithUTF8String:rawName] : @"";
+            NSString* lower = name.lowercaseString;
+            if (!([lower containsString:@"status"] ||
+                  [lower containsString:@"tweet"] ||
+                  [lower containsString:@"promoted"] ||
+                  [lower containsString:@"advert"] ||
+                  [lower containsString:@"scribe"] ||
+                  [lower containsString:@"model"] ||
+                  [lower containsString:@"content"])) {
+                continue;
+            }
+            const char* type = ivar_getTypeEncoding(list[index]);
+            NSString* valueClass = @"";
+            if (type && type[0] == '@') {
+                id value = object_getIvar(item, list[index]);
+                if (value) valueClass = NSStringFromClass([value classForCoder]);
+            }
+            [ivars addObject:@{
+                @"name": name,
+                @"type": type ? [NSString stringWithUTF8String:type] : @"",
+                @"valueClass": valueClass ?: @""
+            }];
+        }
+        free(list);
+    }
+    return @{@"selectors": selectors, @"ivars": ivars};
+}
+
 void BHTRecordTimelineItemObservation(id item, NSString* location, BOOL hidden) {
     if (!item) return;
     NSString* className = NSStringFromClass([item classForCoder]);
@@ -30,7 +78,8 @@ void BHTRecordTimelineItemObservation(id item, NSString* location, BOOL hidden) 
             observation = [@{
                 @"seen": @0,
                 @"hidden": @0,
-                @"locations": [NSMutableSet set]
+                @"locations": [NSMutableSet set],
+                @"runtimeShape": BHTTimelineRuntimeShape(item)
             } mutableCopy];
             BHTTimelineItemObservations[className] = observation;
         }
@@ -59,7 +108,8 @@ static NSDictionary* BHTTimelineObservationSnapshot(void) {
                     @"locations":
                         [[(NSSet*)observation[@"locations"] allObjects]
                             sortedArrayUsingSelector:
-                                @selector(localizedCaseInsensitiveCompare:)]
+                                @selector(localizedCaseInsensitiveCompare:)],
+                    @"runtimeShape": observation[@"runtimeShape"] ?: @{}
                 };
             }];
     }
@@ -143,9 +193,11 @@ static NSArray* BHTRuntimeProbes(void) {
         BHTProbe(@"ads", @"TFNItemsDataViewController", @"itemAtIndexPath:", NO),
         BHTProbe(@"ads", @"TFNItemsDataViewController", @"tableViewCellForItem:atIndexPath:", NO),
         BHTProbe(@"ads", @"TFNItemsDataViewController", @"tableView:heightForRowAtIndexPath:", NO),
+        BHTProbe(@"ads", @"T1URTTimelineStatusItemViewModel", @"isPromoted", NO),
         BHTProbe(@"ads", @"T1URTTimelineStatusItemViewModel", @"status", NO),
         BHTProbe(@"ads", @"TwitterURT.URTTimelineGoogleNativeAdViewModel", @"init", NO),
         BHTProbe(@"ads", @"T1TwitterSwift.GoogleNativeAdCell", @"preferredLayoutAttributesFittingAttributes:", NO),
+        BHTProbe(@"ads", @"UICollectionViewCell", @"preferredLayoutAttributesFittingAttributes:", NO),
         BHTProbe(@"ads", @"TwitterURT.PromotableTrend", @"promotedTrendID", NO),
         BHTProbe(@"ads", @"T1TwitterSwift.ImmersiveGoogleNativeAdCardViewModel", @"init", NO),
         BHTProbe(@"ads", @"T1TwitterSwift.ExplorePromotedViewModel", @"init", NO),
