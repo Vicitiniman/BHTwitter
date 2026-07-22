@@ -6,5 +6,5 @@ Description: A modular X client enhancement tweak with X 12.9 compatibility.
 Maintainer: Vicitiniman
 Author: BHTwitter and NeoFreeBird contributors
 Section: Tweaks
-Depends: mobilesubstrate, ws.hbang.common
+Depends: mobilesubstrate
 Conflicts: com.den.twigalaxy, xyz.cypwn.twigalaxy, xyz.cypwn.bhtwitter, com.netskao.twitternoads, xyz.cypwn.bringbacktwitter

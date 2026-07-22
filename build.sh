@@ -100,6 +100,20 @@ find_build_artifact() {
   printf '%s\n' "$result"
 }
 
+validate_runtime_linkage() {
+  local dylib="$1"
+  if ! command -v otool >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local linked_frameworks
+  linked_frameworks="$(otool -L "$dylib")"
+  if grep -Eq 'Cephei(Prefs|UI)?\.framework|/Preferences\.framework' <<<"$linked_frameworks"; then
+    printf '%s\n' "$linked_frameworks" >&2
+    die "BHTwitter.dylib links a settings-only framework that must not load inside X."
+  fi
+}
+
 # The ffmpeg stack is built from source, not tracked.
 if [[ ! -f "$SCRIPT_DIR/deps/ffmpeg-kit-next/build/lib/libffmpegkit.a" ]]; then
   say "ffmpeg libraries not found; building them from source (this takes a while)."
@@ -119,6 +133,7 @@ case "$MODE" in
       say "Building the IPA."
       if command -v cyan >/dev/null 2>&1; then
         BHT_DYLIB="$(find_build_artifact BHTwitter.dylib)"
+        validate_runtime_linkage "$BHT_DYLIB"
         FLEX_DYLIB="$(find_build_artifact libbhFLEX.dylib)"
         ZX_DYLIB="$(find_build_artifact zxPluginsInject.dylib)"
         cyan -i packages/com.atebits.Tweetie2.ipa -o packages/NeoFreeBird-sideloaded --ignore-encrypted \
@@ -137,6 +152,7 @@ case "$MODE" in
     clean_tree
     export THEOS_PACKAGE_SCHEME="rootless"
     make package
+    validate_runtime_linkage "$(find_build_artifact BHTwitter.dylib)"
     say "NeoFreeBird has been successfully built. Enjoy!"
     ;;
   trollstore)
@@ -150,6 +166,7 @@ case "$MODE" in
       say "Merging NeoFreeBird to provided Twitter IPA."
       if command -v cyan >/dev/null 2>&1; then
         BHT_DYLIB="$(find_build_artifact BHTwitter.dylib)"
+        validate_runtime_linkage "$BHT_DYLIB"
         FLEX_DYLIB="$(find_build_artifact libbhFLEX.dylib)"
         cyan -i packages/com.atebits.Tweetie2.ipa -o packages/NeoFreeBird-trollstore.tipa --ignore-encrypted \
           -uwf "$BHT_DYLIB" "$FLEX_DYLIB" \
@@ -167,6 +184,7 @@ case "$MODE" in
     clean_tree
     unset THEOS_PACKAGE_SCHEME || true
     make package
+    validate_runtime_linkage "$(find_build_artifact BHTwitter.dylib)"
     say "NeoFreeBird has been successfully built. Enjoy!"
     ;;
   *)
