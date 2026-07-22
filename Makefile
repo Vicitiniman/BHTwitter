@@ -1,22 +1,28 @@
 ARCHS = arm64
-TARGET := iphone:clang:latest:14.0
-INSTALL_TARGET_PROCESSES = Twitter
+TARGET := iphone:clang:16.5:15.0
 include $(THEOS)/makefiles/common.mk
 
+DEBUG ?= 1
 TWEAK_NAME = BHTwitter
 
-BHTwitter_FILES = Tweak.x $(wildcard *.m BHDownload/*.m BHTBundle/*.m Colours/*.m JGProgressHUD/*.m SAMKeychain/*.m AppIcon/*.m CustomTabBar/*.m ThemeColor/*.m)
-BHTwitter_FRAMEWORKS = UIKit Foundation AVFoundation AVKit CoreMotion GameController VideoToolbox Accelerate CoreMedia CoreImage CoreGraphics ImageIO Photos CoreServices SystemConfiguration SafariServices Security QuartzCore WebKit SceneKit
+NFB_NAME := $(shell sed -n 's/^Name: //p' control)
+NFB_VERSION := $(shell sed -n 's/^Version: //p' control)
+NFB_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
+
+BHTwitter_FILES = $(shell find src \( -name '*.x' -o -name '*.m' \) | sort)
+BHTwitter_FRAMEWORKS = UIKit Foundation AVFoundation AVKit AudioToolbox CoreText CoreMotion GameController VideoToolbox Accelerate CoreMedia CoreVideo CoreImage CoreGraphics ImageIO Photos CoreServices SystemConfiguration SafariServices Security QuartzCore WebKit SceneKit
 BHTwitter_PRIVATE_FRAMEWORKS = Preferences
 BHTwitter_EXTRA_FRAMEWORKS = Cephei CepheiPrefs CepheiUI
-BHTwitter_OBJ_FILES = $(shell find lib -name '*.a')
+BHTwitter_OBJ_FILES = $(shell find deps/ffmpeg-kit-next/build/lib -name '*.a' 2>/dev/null)
 BHTwitter_LIBRARIES = sqlite3 bz2 c++ iconv z
-BHTwitter_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-nullability-completeness -Wno-unused-function -Wno-unused-property-ivar -Wno-error
+BHTwitter_CFLAGS = -Isrc -Ideps/ffmpeg-kit-next/build -fobjc-arc -Wno-deprecated-declarations -Wno-nullability-completeness -Wno-unused-function -Wno-unused-property-ivar -Wno-error -DNFB_VERSION_STRING='"$(NFB_NAME) v$(NFB_VERSION)"' -DNFB_COMMIT_STRING='"$(NFB_COMMIT)"'
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
 ifdef SIDELOADED
-SUBPROJECTS += keychainfix
+SUBPROJECTS += deps/flex deps/zxPluginsInject/upstream
+else
+SUBPROJECTS += deps/flex
 endif
 
 include $(THEOS_MAKE_PATH)/aggregate.mk

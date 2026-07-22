@@ -1,0 +1,28 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 0
+BreakBeforeBraces: Attach
+IndentCaseLabels: true
+PointerAlignment: Left
+ObjCBlockIndentWidth: 4
+ObjCSpaceAfterProperty: true
+ObjCSpaceBeforeProtocolList: true
+KeepEmptyLines:
+  AtEndOfFile: false
+  AtStartOfBlock: false
+  AtStartOfFile: false
+SpacesBeforeTrailingComments: 1
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+IncludeCategories:
+  - Regex: '^<'
+    Priority: 1
+  - Regex: '.*'
+    Priority: 2
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+ObjCBreakBeforeNestedBlockParam: true
+SpacesInContainerLiterals: false
+AlignConsecutiveMacros: Consecutive
+AllowShortBlocksOnASingleLine: Empty
+InsertNewlineAtEOF: true
+LineEnding: LF

@@ -1,9 +1,10 @@
-Package: com.bandarhl.bhtwitter
-Name: BHTwitter
-Version: 4.4
+Package: com.vicitiniman.neofreebird
+Name: NeoFreeBird
+Version: 6.1.0-beta.1
 Architecture: iphoneos-arm
-Description: Awesome tweak for Twitter
-Maintainer: Bandar Alruwaili
-Author: Bandar Alruwaili
+Description: A modular X client enhancement tweak with X 12.9 compatibility.
+Maintainer: Vicitiniman
+Author: BHTwitter and NeoFreeBird contributors
 Section: Tweaks
 Depends: mobilesubstrate, ws.hbang.common
+Conflicts: com.den.twigalaxy, xyz.cypwn.twigalaxy, xyz.cypwn.bhtwitter, com.netskao.twitternoads, xyz.cypwn.bringbacktwitter

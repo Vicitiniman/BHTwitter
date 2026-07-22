@@ -1,0 +1,172 @@
+# X 12.9 feature audit
+
+Target inspected during the compatibility pass: X 12.9 (build 10), bundle
+`com.atebits.Tweetie2`, minimum iOS 15.0. The supplied IPA contained 62 Mach-O
+images and no encrypted executable images.
+
+This branch uses NeoFreeBird v6's modular source layout while keeping the X
+12.9-specific hook decisions from the earlier BHTwitter audit. All user-visible
+new behavior has a setting. Compatibility shims and runtime reporting are the
+only unconditional code paths.
+
+## Safety boundary
+
+- No attestation bypass is implemented.
+- No login replacement, cookie harvesting, session-token extraction, or web
+  GraphQL credential reuse is compiled.
+- Subscription state is not spoofed. Native/server-backed eligibility remains
+  authoritative.
+- Tweet source labels use X 12.9's on-device `TFNTwitterStatus-composerSource`
+  path.
+
+## Ad blocking
+
+The blocker is deliberately layered because X now inserts promoted material at
+several points:
+
+1. `TFNTwitterAPICommandContext-allowPromotedContent` prevents promoted results
+   from being requested where the API honors the flag.
+2. X 12.9 feature switches disable SSP, dynamic-video, unified-card, article
+   webview, and promoted-profile paths.
+3. `TFNItemsDataViewAdapterRegistry-dataViewAdapterForItem:` rejects promoted
+   statuses plus the exact Google-native, `PromotableTrend`, immersive-card,
+   and Explore-promoted models before adapter creation.
+4. `T1PlayerMediaEntitySessionProducible` keeps the real playable media entity
+   but removes only its separate `promotedContent` session payload.
+5. `TFSTwitterSspMetadata` disables preroll eligibility and ad-tag URLs.
+6. `TFNItemsDataViewController` section filtering removes promoted statuses,
+   promoted Explore trends/heroes, and their orphaned module chrome without
+   leaving blank cells.
+7. `TFNTwitterStatus` ad flags, SSP metadata, dynamic-ad permission, and
+   `isCardHidden` form the final card/video fallback.
+
+The obsolete `TFSTwitterAPICommandAccountStateProvider-allowPromotedContent`
+hook is intentionally absent.
+
+## Feature matrix
+
+Status meanings:
+
+- **Updated**: retargeted or behavior corrected for the newer app.
+- **Ported**: adopted from the newer NeoFreeBird/Theacrat architecture.
+- **Combined**: uses both the X 12.9-specific and newer modular approaches.
+- **Runtime check**: compiled defensively and included in the exported report;
+  it needs an on-device pass because the private Swift surface can move.
+
+| Area | Setting | Status | X 12.9 implementation |
+|---|---|---|---|
+| General | `hide_promoted` | Combined | Layered request, model, section, player, metadata, status, and feature-switch blocker described above |
+| General | `hide_premium_offer` | Updated | Upsells only; genuine subscription state is preserved |
+| General | `padlock` | Ported | In-memory relock and app-switcher cover |
+| General | `no_tab_bar_hiding` | Updated | X 12.9 pin/collapse capabilities plus ratio clamp; fullscreen hides remain intact |
+| General | `disable_rtl` | Ported | Rebuilds paragraph styles with LTR direction |
+| General | `strip_share_tracking` | Updated | Removes `s`/`t` parameters only when enabled |
+| General | `expand_tco_links` | Updated | No longer unconditional |
+| General | `show_scroll_indicator` | Ported | Typed account feature-switch accessor |
+| Appearance | theme and app icon controls | Ported | Modern settings pages and live theme reapply |
+| Appearance | custom navigation | Combined | Captures/reorders native tab entries; opt-in Likes uses the Grok carrier |
+| Appearance | `tab_bar_theming` | Ported | Native selected/unselected colors |
+| Appearance | `restore_tab_labels` | Updated | Current `T1TabView` title path |
+| Appearance | `restore_launch_animation` | Updated | No longer forced on; strips only the X reveal mask |
+| Appearance | `restore_refresh_sounds` | Updated | No longer always on |
+| Appearance | `custom_fonts` | Ported | Modern picker with migrated preferences |
+| Timeline | `hide_who_to_follow` | Combined | Section model filter plus targeted iPad controller |
+| Timeline | `hide_timeline_prompts` | Combined | Prompt/module filter plus targeted update pill |
+| Timeline | `hide_discover_more` | Updated | Exact related-post entry IDs; no broad footer/header deletion |
+| Timeline | `hide_topics` | Updated | Exact topic banners and topic-marked prompts |
+| Timeline | `hide_topics_to_follow` | Updated | Exact profile topic collections/suggestion identifiers |
+| Timeline | `hide_spaces` | Updated | Fleet-line visibility seam; runtime checked |
+| Timeline | `hide_custom_timelines` | Updated | Hides without persisting an empty pinned list |
+| Timeline | `remember_timeline_tab` | Updated | Disabled preference now leaves X's native value alone |
+| Timeline | `enable_likes_tab` | New | Opt-in bottom destination backed by native Likes history |
+| Timeline | `likes_media_waterfall` | New/runtime check | Native-section media extraction, pagination trigger, 2–5 columns |
+| Grok | `enable_grok_translations` | Updated | Manual translation gates are no longer forced globally |
+| Grok | `hide_grok_analyze` | Updated | Backend switch plus current button paths |
+| Grok | `hide_grok_sidebar` | Ported | Current navigation model filtering |
+| Grok | `hide_grok_create` | Updated | Composer, photo, timeline and immersive gates |
+| Grok | `disable_auto_translate` | Ported | Leaves manual translation available |
+| Media | `download_videos` | Ported | Modern action sheet, MP4/HLS/GIF and FFmpeg workflow |
+| Media | `dm_media_downloads` | Updated/runtime check | Default-off opt-in; Swift attachment view and save-plugin availability are reported |
+| Media | `voice_creation_enabled` | Updated/runtime check | X 12.9 keyed voice-post and voice-reply gates |
+| Media | `no_voice_messages` | Corrected/runtime check | Turns legacy DM and XChat voice creation/rendering off when enabled |
+| Media | `old_compose_bar` | Corrected/runtime check | Disables the XChat v2 composer when enabled |
+| Media | `dm_reply_later_enabled` | Updated/runtime check | Native keyed gate; server/account support remains authoritative |
+| Media | `media_upload_4k_enabled` | Updated/runtime check | Legacy and X Lite 4K keyed gates; upload server limits remain authoritative |
+| Media | `custom_voice_upload` | Updated | Previously always on; now opt-in |
+| Media | `direct_save` | Ported | Share sheet or direct Photos save |
+| Media | `disable_video_captions` | Ported | Current switch family |
+| Media | `auto_highest_load` | Updated | X 12.9 `isLoadingHighestQualityImageVariantPermitted` plus timeline image and slideshow paths; default on |
+| Media | `force_highest_video_quality` | New/runtime check | Sorts variants and prefers the highest MP4 primary URL |
+| Media | `force_tweet_full_frame` | Updated | Photo attachment adapter display type |
+| Media | `restore_video_timestamp` | Ported | Current immersive progress plugin |
+| Media | `disable_immersive_scroll` | Ported | Feature threshold and gesture fallback |
+| Profile | `follow_confirm` | Ported | Current `TUIFollowControl` action |
+| Profile | `copy_profile_info` | Ported | Native-style profile action provider |
+| Profile | `disable_articles` | Corrected | Off now preserves X's native gate |
+| Profile | `disable_highlights` | Corrected | Off now preserves X's native gate |
+| Profile | `hide_blue_verified` | Updated | User, source, typeahead, DM and cached status-model paths |
+| Profile | `hide_follow_button` | Updated | Current author view |
+| Profile | `restore_follow_button` | Updated | Keeps genuine active subscriptions intact |
+| Profile | `square_avatars` | Ported | Live avatar/image/shadow restyling |
+| Profile | `full_profile_counts` | Updated | Previously always on; now opt-in |
+| Profile/Grok | bio translation | Combined | Old `bio_translate` preference migrates to native Grok translations; both canonical-user selectors are hooked |
+| Tweets | `enable_edit_tweet` | Updated | Exposes native UI only; server eligibility still applies |
+| Tweets | undo timeout | Ported | Unified timeout picker and old-key migration |
+| Tweets | `tweet_confirm` / `like_confirm` | Updated | Current composer plus X 12.9 `TTAStatusInlineActionButton-didTap`, slideshow, and immersive actions |
+| Tweets | `tweet_to_image` | Ported | Long-press share with table/collection fallback |
+| Tweets | inline-button hides | Updated | `TTAStatusInlineAnalyticsButton` and current class list |
+| Tweets | sensitive/age controls | Ported | Explicit toggles; age bypass defaults off |
+| Tweets | `reply_sorting` | Corrected | Covers `reply_sorting_enabled` and X 12.9's minimal-detail v2 switch; off preserves native behavior |
+| Tweets | `restore_reply_context` | Corrected | Off leaves X's native switch untouched |
+| Tweets | `restore_tweet_labels` | Updated | Native `composerSource`; no account/session web request |
+| Search | `no_history` | Updated | Read and write paths on recent-search datastore |
+| Search | `hide_trends` | Combined | Phone Explore controller and targeted iPad sidebar |
+| Search | `hide_trend_videos` | Ported | Explore carousel model filter |
+| Web | sharing domain | Ported | Applied independently of tracking removal |
+| Web | `always_open_safari` | Updated | Keeps login/2FA flows in-app |
+| Web | `new_inapp_webview` | Ported | Current feature-switch path |
+| Branding | terminology, pill label, logo color | Ported | Modern bundle/text/tab paths |
+| Experimental | screenshot toggles | Ported/updated | Both detection and branding cleanup are opt-in |
+| Debug | FLEX | Ported | Explicit toggle |
+| Debug | compatibility report | New | Exports a non-sensitive JSON runtime probe report |
+
+## Selected newer-source ports
+
+Worthwhile pieces taken from the newer Theacrat/NeoFreeBird work include the
+central settings registry and migration, structural timeline filtering, modern
+Swift DM media discovery, native tab-entry ordering, configurable undo timing,
+Grok surface cleanup, reply context restoration, video timestamps, square
+avatars, full count formatting, and the modular build/FFmpeg layout.
+
+From the Orion-derived changes, this branch keeps only targeted versions of the
+refresh-pill, iPad trends/recommendations, and screenshot-overlay cleanup. It
+does not use the broad global `UIView-didMoveToWindow` hook, and it does not
+change the FFmpeg TLS backend without a demonstrated build need.
+
+## Intentionally retired or deferred
+
+- The old custom DM background hooked
+  `T1DirectMessageConversationEntriesViewController`, a controller removed by
+  X's Swift DM rewrite. A global view/background hook would be fragile and could
+  obscure message content, so it is not ported.
+- The dormant `always_following_page` preference was never exposed in the last
+  BHTwitter settings screen. The X 12.9 audit found the current
+  `selectTimelineVariant:shouldRefresh:` path but not a stable enum value; the
+  branch does not guess one.
+- Web reply/login replacements, stored cookies, embedded credentials,
+  subscription spoofing, and attestation evasion remain excluded.
+
+## Device validation
+
+After launching a test build, open:
+
+`Settings > NeoFreeBird > Debug > Export compatibility report`
+
+The JSON is also written to:
+
+`Library/Caches/BHTwitter-X12.9-Compatibility.json`
+
+The first device pass should focus on the native Likes factory/tab carrier, DM
+save-action plugin, Home/Spaces Swift aliases, source-label model access, and
+highest-video preference. Missing private selectors degrade to native behavior
+and are listed in the report rather than being guessed silently.
