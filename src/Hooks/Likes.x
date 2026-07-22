@@ -1,8 +1,8 @@
 #import "HookHelpers.h"
 #import "Likes/BHTLikesTab.h"
 
-@interface T1TabView (BHTLikesOverlay)
-@property(nonatomic, strong) UIControl* bhtLikesOverlay;
+@interface T1TabView (BHTLikesTap)
+@property(nonatomic, strong) UITapGestureRecognizer* bhtLikesTapGesture;
 @end
 
 // Capture the native private Likes timeline after the ad/timeline filters have
@@ -26,7 +26,7 @@
 
 %hook T1TabView
 
-%property(nonatomic, strong) UIControl* bhtLikesOverlay;
+%property(nonatomic, strong) UITapGestureRecognizer* bhtLikesTapGesture;
 
 - (NSString*)title {
     return [self.scribePage isEqualToString:BHTLikesPageID()] ? @"My Likes" : %orig;
@@ -47,19 +47,37 @@
     %orig;
     BOOL isLikes = [self.scribePage isEqualToString:BHTLikesPageID()] &&
                    [BHTSettings boolForKey:@"enable_likes_tab"];
-    if (isLikes && !self.bhtLikesOverlay) {
-        UIControl* overlay = [[UIControl alloc] initWithFrame:self.bounds];
-        overlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        overlay.accessibilityLabel = @"My Likes";
-        overlay.accessibilityTraits = UIAccessibilityTraitButton;
-        [overlay addTarget:self
-                    action:@selector(bht_openLikes:)
-          forControlEvents:UIControlEventTouchUpInside];
-        [self addSubview:overlay];
-        self.bhtLikesOverlay = overlay;
+    if (!self.bhtLikesTapGesture) {
+        UITapGestureRecognizer* tap = [[UITapGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(bht_openLikes:)];
+        tap.cancelsTouchesInView = YES;
+        tap.delaysTouchesEnded = YES;
+        tap.enabled = NO;
+        [self addGestureRecognizer:tap];
+        self.bhtLikesTapGesture = tap;
     }
-    self.bhtLikesOverlay.hidden = !isLikes;
-    if (isLikes) [self bringSubviewToFront:self.bhtLikesOverlay];
+
+    self.bhtLikesTapGesture.enabled = isLikes;
+    if (!isLikes) return;
+
+    // The Likes destination reuses X's Grok entry for its visual slot. X may
+    // select that entry with a recognizer on either T1TabView or an ancestor.
+    // Make every native tap recognizer wait for ours; ours succeeds on the
+    // Likes slot, cancelling the underlying Grok selection before presenting
+    // the native Likes controller.
+    self.userInteractionEnabled = YES;
+    UIView* current = self;
+    for (NSUInteger depth = 0; current && depth < 4;
+         depth++, current = current.superview) {
+        for (UIGestureRecognizer* recognizer in current.gestureRecognizers) {
+            if (recognizer != self.bhtLikesTapGesture &&
+                [recognizer isKindOfClass:UITapGestureRecognizer.class]) {
+                [recognizer requireGestureRecognizerToFail:
+                                self.bhtLikesTapGesture];
+            }
+        }
+    }
 }
 
 %new

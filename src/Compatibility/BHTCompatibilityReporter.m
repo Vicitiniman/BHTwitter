@@ -5,6 +5,111 @@
 #import <objc/runtime.h>
 
 static NSArray<NSString*>* BHTNavigationEntryClasses;
+static NSMutableDictionary<NSString*, NSMutableDictionary*>*
+    BHTTimelineItemObservations;
+
+static NSObject* BHTObservationLock(void) {
+    static NSObject* lock;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ lock = [NSObject new]; });
+    return lock;
+}
+
+void BHTRecordTimelineItemObservation(id item, NSString* location, BOOL hidden) {
+    if (!item) return;
+    NSString* className = NSStringFromClass([item classForCoder]);
+    if (className.length == 0) return;
+
+    @synchronized(BHTObservationLock()) {
+        if (!BHTTimelineItemObservations) {
+            BHTTimelineItemObservations = [NSMutableDictionary dictionary];
+        }
+        NSMutableDictionary* observation =
+            BHTTimelineItemObservations[className];
+        if (!observation) {
+            observation = [@{
+                @"seen": @0,
+                @"hidden": @0,
+                @"locations": [NSMutableSet set]
+            } mutableCopy];
+            BHTTimelineItemObservations[className] = observation;
+        }
+        observation[@"seen"] =
+            @([observation[@"seen"] unsignedIntegerValue] + 1);
+        if (hidden) {
+            observation[@"hidden"] =
+                @([observation[@"hidden"] unsignedIntegerValue] + 1);
+        }
+        if (location.length > 0) {
+            [(NSMutableSet*)observation[@"locations"] addObject:location];
+        }
+    }
+}
+
+static NSDictionary* BHTTimelineObservationSnapshot(void) {
+    NSMutableDictionary* snapshot = [NSMutableDictionary dictionary];
+    @synchronized(BHTObservationLock()) {
+        [BHTTimelineItemObservations
+            enumerateKeysAndObjectsUsingBlock:^(
+                NSString* className, NSMutableDictionary* observation,
+                BOOL* stop) {
+                snapshot[className] = @{
+                    @"seen": observation[@"seen"] ?: @0,
+                    @"hidden": observation[@"hidden"] ?: @0,
+                    @"locations":
+                        [[(NSSet*)observation[@"locations"] allObjects]
+                            sortedArrayUsingSelector:
+                                @selector(localizedCaseInsensitiveCompare:)]
+                };
+            }];
+    }
+    return [snapshot copy];
+}
+
+static NSArray<NSString*>* BHTInterestingMethodsForClass(Class cls) {
+    if (!cls) return @[];
+    NSMutableOrderedSet<NSString*>* names = [NSMutableOrderedSet orderedSet];
+    for (Class current = cls; current && current != NSObject.class;
+         current = class_getSuperclass(current)) {
+        unsigned int count = 0;
+        Method* methods = class_copyMethodList(current, &count);
+        for (unsigned int i = 0; i < count; i++) {
+            NSString* name = NSStringFromSelector(method_getName(methods[i]));
+            NSString* lower = name.lowercaseString;
+            if ([lower containsString:@"tab"] ||
+                [lower containsString:@"panel"] ||
+                [lower containsString:@"select"] ||
+                [lower containsString:@"tap"] ||
+                [lower containsString:@"press"] ||
+                [lower containsString:@"activate"] ||
+                [lower containsString:@"navigation"] ||
+                [lower containsString:@"visible"]) {
+                [names addObject:name];
+            }
+        }
+        free(methods);
+    }
+    return [[names array]
+        sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+}
+
+static NSDictionary* BHTNavigationMethodSnapshot(void) {
+    NSMutableDictionary* fixed = [NSMutableDictionary dictionary];
+    for (NSString* className in @[
+             @"T1TabView", @"T1TabBarViewController",
+             @"T1TabbedAppNavigationViewController"
+         ]) {
+        fixed[className] =
+            BHTInterestingMethodsForClass(NSClassFromString(className));
+    }
+
+    NSMutableDictionary* entries = [NSMutableDictionary dictionary];
+    for (NSString* className in BHTNavigationEntryClasses ?: @[]) {
+        entries[className] =
+            BHTInterestingMethodsForClass(NSClassFromString(className));
+    }
+    return @{@"navigationClasses": fixed, @"entryClasses": entries};
+}
 
 NSURL* BHTCompatibilityReportURL(void) {
     NSURL* caches = [[[NSFileManager defaultManager]
@@ -35,8 +140,12 @@ static NSArray* BHTRuntimeProbes(void) {
         BHTProbe(@"ads", @"TFNTwitterAPICommandContext", @"allowPromotedContent", NO),
         BHTProbe(@"ads", @"TFNItemsDataViewController", @"setSections:restoreScrollPosition:", NO),
         BHTProbe(@"ads", @"TFNItemsDataViewController", @"updateSections:reconfigureItemIdentifiers:withRowAnimation:completion:", NO),
+        BHTProbe(@"ads", @"TFNItemsDataViewController", @"itemAtIndexPath:", NO),
+        BHTProbe(@"ads", @"TFNItemsDataViewController", @"tableViewCellForItem:atIndexPath:", NO),
+        BHTProbe(@"ads", @"TFNItemsDataViewController", @"tableView:heightForRowAtIndexPath:", NO),
         BHTProbe(@"ads", @"T1URTTimelineStatusItemViewModel", @"status", NO),
         BHTProbe(@"ads", @"TwitterURT.URTTimelineGoogleNativeAdViewModel", @"init", NO),
+        BHTProbe(@"ads", @"T1TwitterSwift.GoogleNativeAdCell", @"preferredLayoutAttributesFittingAttributes:", NO),
         BHTProbe(@"ads", @"TwitterURT.PromotableTrend", @"promotedTrendID", NO),
         BHTProbe(@"ads", @"T1TwitterSwift.ImmersiveGoogleNativeAdCardViewModel", @"init", NO),
         BHTProbe(@"ads", @"T1TwitterSwift.ExplorePromotedViewModel", @"init", NO),
@@ -46,6 +155,7 @@ static NSArray* BHTRuntimeProbes(void) {
         BHTProbe(@"ads", @"TFSTwitterSspMetadata", @"adTagURL", NO),
         BHTProbe(@"ads", @"TFNTwitterStatus", @"allowDynamicAd", NO),
         BHTProbe(@"ads", @"TFNTwitterStatus", @"isAdsVideoCard", NO),
+        BHTProbe(@"ads", @"T1StatusTableSlideshowManager", @"_t1_isPromotedTweetMediaDisabledInMultiStatusSlideshow", NO),
 
         BHTProbe(@"images", @"T1ImageDisplayView", @"_tfn_shouldUseHighestQualityImage", NO),
         BHTProbe(@"images", @"T1ImageDisplayView", @"_tfn_shouldUseHighQualityImage", NO),
@@ -204,6 +314,8 @@ void BHTWriteCompatibilityReport(void) {
         @"features": featureSummary,
         @"settings": BHTSettingsSnapshot(),
         @"navigationEntryClasses": BHTNavigationEntryClasses ?: @[],
+        @"navigationMethods": BHTNavigationMethodSnapshot(),
+        @"timelineItemObservations": BHTTimelineObservationSnapshot(),
         @"probes": probes
     };
 

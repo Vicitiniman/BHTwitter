@@ -4,6 +4,69 @@
 //
 
 #import "HookHelpers.h"
+#import "Compatibility/BHTCompatibilityReporter.h"
+#include <string.h>
+
+static char kBHTHiddenAdCellKey;
+
+static id BHTObjectForSelector(id object, SEL selector) {
+    if (!object || !selector || ![object respondsToSelector:selector]) return nil;
+    NSMethodSignature* signature = [object methodSignatureForSelector:selector];
+    const char* returnType = signature.methodReturnType;
+    if (!returnType || returnType[0] != '@') return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
+static BOOL BHTBoolForSelector(id object, SEL selector) {
+    if (!object || !selector || ![object respondsToSelector:selector]) return NO;
+    NSMethodSignature* signature = [object methodSignatureForSelector:selector];
+    const char* returnType = signature.methodReturnType;
+    if (!returnType) return NO;
+    if (returnType[0] == '@') {
+        return [((id (*)(id, SEL))objc_msgSend)(object, selector) boolValue];
+    }
+    if (strchr("BcCsSiIlLqQ", returnType[0])) {
+        return ((BOOL (*)(id, SEL))objc_msgSend)(object, selector);
+    }
+    return NO;
+}
+
+static BOOL BHTValueMarksPromotion(id value) {
+    if (!value || value == NSNull.null) return NO;
+    if ([value isKindOfClass:NSString.class]) return ((NSString*)value).length > 0;
+    if ([value isKindOfClass:NSNumber.class]) return ((NSNumber*)value).boolValue;
+    if ([value respondsToSelector:@selector(count)]) {
+        return ((NSUInteger (*)(id, SEL))objc_msgSend)(value, @selector(count)) > 0;
+    }
+    return YES;
+}
+
+static BOOL BHTDictionaryMarksPromotion(NSDictionary* dictionary) {
+    if (![dictionary isKindOfClass:NSDictionary.class]) return NO;
+    for (id keyObject in dictionary) {
+        NSString* key = [[keyObject description] lowercaseString];
+        BOOL promotionKey = [key containsString:@"promoted"] ||
+                            [key containsString:@"advertiser"] ||
+                            [key isEqualToString:@"ad_metadata"] ||
+                            [key isEqualToString:@"admetadata"] ||
+                            [key isEqualToString:@"ad_id"] ||
+                            [key isEqualToString:@"adid"];
+        if (promotionKey && BHTValueMarksPromotion(dictionary[keyObject])) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static BOOL BHTClassNameMarksPromotion(NSString* className) {
+    NSString* lower = className.lowercaseString;
+    return [lower containsString:@"googlenativead"] ||
+           [lower containsString:@"promotedviewmodel"] ||
+           [lower containsString:@"promotabletrend"] ||
+           [lower hasSuffix:@"advertisementviewmodel"] ||
+           [lower hasSuffix:@"adviewmodel"] ||
+           [lower hasSuffix:@"adcell"];
+}
 
 // Timeline items are removed from the section data before it reaches the data
 // view controller, so no empty cells or gaps are left behind. This covers every
@@ -13,22 +76,18 @@
 // The promoted state of a status item is only reachable through its Swift-side
 // `status` stored property, which is still registered as an ObjC ivar.
 static BOOL StatusItemIsPromoted(id item) {
-    TFNTwitterStatus* status = nil;
-    if ([item respondsToSelector:@selector(status)]) {
-        status = ((id (*)(id, SEL))objc_msgSend)(item, @selector(status));
-    }
+    TFNTwitterStatus* status = BHTObjectForSelector(item, @selector(status));
 
     Ivar statusIvar = class_getInstanceVariable([item class], "status");
     if (!statusIvar) {
         statusIvar = class_getInstanceVariable([item class], "_status");
     }
     if (!statusIvar) {
-        return [status respondsToSelector:@selector(isPromoted)] &&
-               status.isPromoted;
+        return BHTBoolForSelector(status, @selector(isPromoted));
     }
 
     status = status ?: object_getIvar(item, statusIvar);
-    return [status respondsToSelector:@selector(isPromoted)] && status.isPromoted;
+    return BHTBoolForSelector(status, @selector(isPromoted));
 }
 
 // Promoted trends and event summary heroes (the image ads at the top of
@@ -91,13 +150,11 @@ static BOOL ItemHasPromotedTrendID(id item) {
 }
 
 static BOOL ScribeItemIsPromoted(id item) {
-    if (![item respondsToSelector:@selector(scribeItem)]) {
-        return NO;
-    }
-
-    NSDictionary* scribeItem = [item performSelector:@selector(scribeItem)];
-    return [scribeItem isKindOfClass:[NSDictionary class]] &&
-           scribeItem[@"promoted_id"] != nil;
+    NSDictionary* scribeItem = BHTObjectForSelector(item, @selector(scribeItem));
+    NSDictionary* scribeParameters =
+        BHTObjectForSelector(item, @selector(scribeParameters));
+    return BHTDictionaryMarksPromotion(scribeItem) ||
+           BHTDictionaryMarksPromotion(scribeParameters);
 }
 
 static BOOL ShouldHideItem(id item, NSString* location) {
@@ -105,14 +162,16 @@ static BOOL ShouldHideItem(id item, NSString* location) {
     NSString* className = NSStringFromClass([item classForCoder]);
 
     if ([BHTSettings boolForKey:@"hide_promoted"]) {
-        if ([item respondsToSelector:@selector(isPromoted)] &&
-            ((BOOL (*)(id, SEL))objc_msgSend)(item, @selector(isPromoted))) {
+        if (BHTBoolForSelector(item, @selector(isPromoted)) ||
+            BHTBoolForSelector(item, NSSelectorFromString(@"isAd")) ||
+            BHTBoolForSelector(item, NSSelectorFromString(@"isAdvertisement")) ||
+            BHTBoolForSelector(item, NSSelectorFromString(@"isSponsored")) ||
+            BHTBoolForSelector(item, NSSelectorFromString(@"isPromotedContent"))) {
             return YES;
         }
 
-        if ([item
-                isKindOfClass:objc_getClass("T1URTTimelineStatusItemViewModel")] &&
-            StatusItemIsPromoted(item)) {
+        if (StatusItemIsPromoted(item) || BHTClassNameMarksPromotion(className) ||
+            ScribeItemIsPromoted(item)) {
             return YES;
         }
 
@@ -157,6 +216,16 @@ static BOOL ShouldHideItem(id item, NSString* location) {
     return NO;
 }
 
+static BOOL ShouldHideAndRecord(id item, NSString* location) {
+    id unwrapped = unwrapDataViewItem(item);
+    BOOL hidden = ShouldHideItem(unwrapped, location);
+    BHTRecordTimelineItemObservation(item, location, hidden);
+    if (unwrapped != item) {
+        BHTRecordTimelineItemObservation(unwrapped, location, hidden);
+    }
+    return hidden;
+}
+
 static NSArray* FilteredSections(TFNItemsDataViewController* dataViewController,
                                  NSArray* sections) {
     if (!([BHTSettings boolForKey:@"hide_promoted"] ||
@@ -185,7 +254,7 @@ static NSArray* FilteredSections(TFNItemsDataViewController* dataViewController,
         NSMutableIndexSet* removed = [NSMutableIndexSet indexSet];
 
         for (NSUInteger i = 0; i < count; i++) {
-            if (ShouldHideItem(items[i], location)) {
+            if (ShouldHideAndRecord(items[i], location)) {
                 [removed addIndex:i];
             }
         }
@@ -209,6 +278,15 @@ static NSArray* FilteredSections(TFNItemsDataViewController* dataViewController,
     return modified ? filteredSections : sections;
 }
 
+static id BHTItemAtIndexPath(TFNItemsDataViewController* controller,
+                             NSIndexPath* indexPath, id fallback) {
+    SEL selector = NSSelectorFromString(@"itemAtIndexPath:");
+    return [controller respondsToSelector:selector]
+               ? ((id (*)(id, SEL, id))objc_msgSend)(controller, selector,
+                                                     indexPath)
+               : fallback;
+}
+
 %hook TFNItemsDataViewController
 
 - (void)setSections:(NSArray*)sections
@@ -224,6 +302,46 @@ static NSArray* FilteredSections(TFNItemsDataViewController* dataViewController,
               completion);
 }
 
+// Some X 12.9 timelines keep their section model opaque and only expose the
+// resolved item while constructing a table cell. This is the proven fallback
+// used by NeoFreeBird's prior blocker: hide the cell and collapse its row even
+// when the structural section path above cannot rewrite the data source.
+- (id)tableViewCellForItem:(id)item atIndexPath:(NSIndexPath*)indexPath {
+    id cell = %orig;
+    id resolved = BHTItemAtIndexPath(self, indexPath, item);
+    NSString* location = [self respondsToSelector:@selector(adDisplayLocation)]
+                             ? self.adDisplayLocation
+                             : nil;
+    BOOL hidden = ShouldHideAndRecord(resolved, location);
+    NSNumber* hiddenByBHT = objc_getAssociatedObject(cell,
+                                                      &kBHTHiddenAdCellKey);
+    if (hidden && [cell isKindOfClass:UIView.class]) {
+        UIView* view = cell;
+        view.hidden = YES;
+        view.alpha = 0.0;
+        view.userInteractionEnabled = NO;
+        objc_setAssociatedObject(cell, &kBHTHiddenAdCellKey, @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else if (hiddenByBHT.boolValue && [cell isKindOfClass:UIView.class]) {
+        UIView* view = cell;
+        view.hidden = NO;
+        view.alpha = 1.0;
+        view.userInteractionEnabled = YES;
+        objc_setAssociatedObject(cell, &kBHTHiddenAdCellKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return cell;
+}
+
+- (double)tableView:(UITableView*)tableView
+    heightForRowAtIndexPath:(NSIndexPath*)indexPath {
+    id item = BHTItemAtIndexPath(self, indexPath, nil);
+    NSString* location = [self respondsToSelector:@selector(adDisplayLocation)]
+                             ? self.adDisplayLocation
+                             : nil;
+    return ShouldHideAndRecord(item, location) ? 0.0 : %orig;
+}
+
 %end
 
 // X 12.9 asks the adapter registry for an adapter before a number of timeline
@@ -233,10 +351,18 @@ static NSArray* FilteredSections(TFNItemsDataViewController* dataViewController,
 
 - (id)dataViewAdapterForItem:(id)item {
     if ([BHTSettings boolForKey:@"hide_promoted"] &&
-        ShouldHideItem(item, nil)) {
+        ShouldHideAndRecord(item, nil)) {
         return nil;
     }
     return %orig;
+}
+
+%end
+
+%hook T1StatusTableSlideshowManager
+
+- (BOOL)_t1_isPromotedTweetMediaDisabledInMultiStatusSlideshow {
+    return [BHTSettings boolForKey:@"hide_promoted"] ? YES : %orig;
 }
 
 %end
@@ -257,6 +383,37 @@ static NSArray* FilteredSections(TFNItemsDataViewController* dataViewController,
     return %orig(mediaEntity, contentMediaIdentifier, ownerIdentifier,
                  baseScribeItem, promotedContent);
 }
+
+%end
+
+%group BHTGoogleNativeAdCellHooks
+
+%hook BHTGoogleNativeAdCell
+
+- (void)didMoveToWindow {
+    %orig;
+    if ([BHTSettings boolForKey:@"hide_promoted"]) {
+        UIView* view = (UIView*)self;
+        view.hidden = YES;
+        view.userInteractionEnabled = NO;
+    }
+}
+
+- (CGSize)sizeThatFits:(CGSize)size {
+    return [BHTSettings boolForKey:@"hide_promoted"] ? CGSizeZero : %orig;
+}
+
+- (UICollectionViewLayoutAttributes*)preferredLayoutAttributesFittingAttributes:
+    (UICollectionViewLayoutAttributes*)attributes {
+    UICollectionViewLayoutAttributes* result = %orig;
+    if ([BHTSettings boolForKey:@"hide_promoted"] && result) {
+        result.size = CGSizeZero;
+        result.hidden = YES;
+    }
+    return result;
+}
+
+%end
 
 %end
 
@@ -313,3 +470,13 @@ static NSArray* FilteredSections(TFNItemsDataViewController* dataViewController,
 }
 
 %end
+
+%ctor {
+    %init;
+    Class googleNativeAdCell =
+        NSClassFromString(@"T1TwitterSwift.GoogleNativeAdCell");
+    if (googleNativeAdCell) {
+        %init(BHTGoogleNativeAdCellHooks,
+              BHTGoogleNativeAdCell = googleNativeAdCell);
+    }
+}

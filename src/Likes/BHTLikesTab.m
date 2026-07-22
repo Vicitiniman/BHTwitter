@@ -645,7 +645,36 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
 
 @end
 
-static UIViewController* BHTTopViewController(void) {
+static UIViewController* BHTOwningViewController(UIView* view) {
+    UIResponder* responder = view;
+    while ((responder = responder.nextResponder)) {
+        if ([responder isKindOfClass:UIViewController.class]) {
+            return (UIViewController*)responder;
+        }
+    }
+    return nil;
+}
+
+static UIViewController* BHTVisibleViewController(UIViewController* root) {
+    UIViewController* current = root;
+    while (current) {
+        UIViewController* next = current.presentedViewController;
+        if (!next && [current isKindOfClass:UINavigationController.class]) {
+            next = ((UINavigationController*)current).visibleViewController;
+        }
+        if (!next && [current isKindOfClass:UITabBarController.class]) {
+            next = ((UITabBarController*)current).selectedViewController;
+        }
+        if (!next || next == current) break;
+        current = next;
+    }
+    return current;
+}
+
+static UIViewController* BHTTopViewController(UIView* sourceView) {
+    UIViewController* owner = BHTOwningViewController(sourceView);
+    if (owner.view.window) return BHTVisibleViewController(owner);
+
     UIWindow* keyWindow = nil;
     for (UIWindow* window in UIApplication.sharedApplication.windows) {
         if (window.isKeyWindow) {
@@ -653,21 +682,21 @@ static UIViewController* BHTTopViewController(void) {
             break;
         }
     }
-    UIViewController* top = keyWindow.rootViewController ?: UIApplication.sharedApplication.windows.firstObject.rootViewController;
-    while (top.presentedViewController) top = top.presentedViewController;
-    if ([top isKindOfClass:UINavigationController.class]) {
-        top = ((UINavigationController*)top).visibleViewController ?: top;
-    }
-    if ([top isKindOfClass:UITabBarController.class]) {
-        top = ((UITabBarController*)top).selectedViewController ?: top;
-    }
-    return top;
+    UIViewController* root = keyWindow.rootViewController ?:
+        UIApplication.sharedApplication.windows.firstObject.rootViewController;
+    return BHTVisibleViewController(root);
 }
 
 void BHTPresentLikesFromView(UIView* sourceView) {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BHTPresentLikesFromView(sourceView);
+        });
+        return;
+    }
     if (![BHTSettings boolForKey:@"enable_likes_tab"]) return;
-    UIViewController* host = BHTTopViewController();
-    if (!host || [host isKindOfClass:BHTLikesViewController.class]) return;
+    UIViewController* host = BHTTopViewController(sourceView);
+    if (!host || BHTFindController(host, BHTLikesViewController.class)) return;
 
     BHTLikesViewController* likes = [BHTLikesViewController new];
     likes.navigationItem.leftBarButtonItem =
