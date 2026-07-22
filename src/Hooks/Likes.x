@@ -1,6 +1,10 @@
 #import "HookHelpers.h"
 #import "Likes/BHTLikesTab.h"
 
+@interface T1TabView (BHTLikesOverlay)
+@property(nonatomic, strong) UIControl* bhtLikesOverlay;
+@end
+
 // Capture the native private Likes timeline after the ad/timeline filters have
 // done their work.  The native controller remains responsible for pagination.
 %hook TFNItemsDataViewController
