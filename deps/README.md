@@ -34,5 +34,4 @@ fftools sources compile against FFmpeg internals).
 ## Machine prerequisites
 
 - **Theos** at `$THEOS`.
-- **Cephei / CepheiPrefs / CepheiUI** in `$THEOS/lib` (linked via `EXTRA_FRAMEWORKS`).
 - **cyan** (pyzule-rw) for the IPA merge steps in `build.sh`.

@@ -8,8 +8,6 @@
 #import <AVFoundation/AVFoundation.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <Foundation/Foundation.h>
-#import <Preferences/PSListController.h>
-#import <Preferences/PSSpecifier.h>
 #import <UIKit/UIKit.h>
 #import <WebKit/WebKit.h>
 #import <dlfcn.h>
