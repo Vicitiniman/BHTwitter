@@ -1,3 +1,9 @@
-[submodule "libflex/FLEX"]
-	path = libflex/FLEX
+[submodule "FLEX"]
+	path = deps/flex/upstream
 	url = https://github.com/FLEXTool/FLEX
+[submodule "zxPluginsInject"]
+	path = deps/zxPluginsInject/upstream
+	url = https://github.com/asdfzxcvbn/zxPluginsInject
+[submodule "ffmpeg-kit-next"]
+	path = deps/ffmpeg-kit-next/upstream
+	url = https://github.com/arthenica/ffmpeg-kit-next

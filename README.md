@@ -1,119 +1,80 @@
-# BHTwitter
+# NeoFreeBird for X 12.9
 
-An awesome tweak for Twitter that enhances your experience with additional features and customization options. Get rid of ads, gain access to Twitter Blue features for free and much much more! 
+This fork combines BHTwitter's X 12.9 compatibility work with NeoFreeBird's
+newer modular architecture. It is currently a beta intended for testing against
+X 12.9.
 
-> [!WARNING]  
-> <b>Please do not create issues regarding sign in or Tweeting.</b><br>Twitter/X have added Attestation to prevent the use of third-paty or modified clients. We cannot do anything against this. Please do not create new issues regarding this. 
+## Highlights
 
-## Features
-*Please note that we heavily rely on feature flags. If a feature doesn't work anymore, it's beacuse Twitter most likely removed support for it.*
+- Layered ad blocking for Home, profiles, search, conversations, Explore,
+  cards, articles, and video ad paths.
+- Highest-quality photo loading, optional full-frame timeline media, and a
+  highest-video preference.
+- Modern video/GIF downloads, including supported Direct Message videos.
+- Native tab reordering plus an opt-in **My Likes** bottom destination.
+- A Posts/Media view for Likes with a pinch-adjustable waterfall gallery,
+  original-quality photo viewing, and highest-available MP4 playback.
+- Updated profile, search, Grok, timeline, confirmation, appearance, branding,
+  and accessibility-related features.
+- A runtime compatibility report that can be shared from the Debug settings.
 
-###  General Enhancements 
-- Download videos (even from private accounts)
-- Load photos in highest quality available
-- Save Tweets as images
-- Undo Tweet
-- Enable voice Tweets & voice messages in DM
-- Enable new DM search UI
+Every new X 12.9 behavior has a setting; custom navigation is controlled from
+its editor. Compatibility shims preserve native behavior when their option is
+off.
 
-###  UI Customization
-- Custom tab bar
-- Themes (like Twitter Blue)
-- App icon changer
-- Font changer
-- Padlock
-- Disable edge-to-edge Tweet style
-- Always open in Safari
-- Hide Spaces bar
-- Hide topics Tweets
-- No history feature
-- Disable RTL (Right-To-Left)
-- Disable video layer caption
+The full per-feature review is in
+[`docs/X12_9_FEATURE_AUDIT.md`](docs/X12_9_FEATURE_AUDIT.md).
 
-###  Interaction & Behavior
-- Twitter Circle feature
-- Copy profile information
-- Translate bio
-- Confirm alerts on:
-  - Tweet
-  - Like
-  - Follow
+## Important login note
 
-###  Developer Tools
-- FLEX debugging tool
+X may reject modified clients through server/app attestation. This project does
+not bypass attestation and does not include replacement login flows, cookie or
+session-token harvesting, or subscription-state spoofing. Those approaches are
+fragile, unsafe for accounts, and outside this fork's compatibility work.
 
+## Build locally
 
-## Screenshots
-
-| ![](1.png) | ![](2.png) | ![](3.png) |
-|:----------:|:----------:|:----------:|
-| ![](4.png) |
-
-
-## Building BHTwitter
-
-###  Local Setup
-
-1. Install [Theos](https://github.com/theos/theos)
-2. Install [cyan](https://github.com/asdfzxcvbn/pyzule-rw) (for sideload or TrollStore builds)
+Install [Theos](https://github.com/theos/theos) and
+[cyan](https://github.com/asdfzxcvbn/pyzule-rw) for IPA/TrollStore output, then:
 
 ```bash
-git clone --recursive https://github.com/BandarHL/BHTwitter
+git clone --recursive https://github.com/Vicitiniman/BHTwitter.git
 cd BHTwitter
-chmod +x ./build.sh
-./build.sh [OPTIONS]
+chmod +x build.sh
 ```
 
-#### Options:
-- `--rootfull` : Build for rootfull deployment
-- `--rootless` : Build for rootless deployment
-- `--trollstore` : Build for TrollStore deployment
-- *(No option)* or `--sideloaded` : Build for sideloaded deployment 
+Place a decrypted IPA at `packages/com.atebits.Tweetie2.ipa` for IPA builds and
+run one of:
 
-
-###  GitHub Actions
-
-1. Fork this repository
-2. Enable workflows in the **Actions** tab
-3. Select the **Build and Release BHTwitter** workflow
-4. Input required parameters and run the workflow
-   - Choose deployment type (`rootfull`, `rootless`, `sideloaded`, `trollstore`)
-   - For sideloaded/trollstore: provide a valid URL to decrypted IPA
-   - For rootfull/rootless: any value works
-
-
-## Examples
-
-###  Sideloaded
 ```bash
-# Place your IPA file in the packages folder. It needs to be named "com.atebits.Tweetie2.ipa"
-# Then run
-
 ./build.sh --sideloaded
-# You'll get BHTwitter-sideloaded.ipa in the packages folder.
-```
-
-###  TrollStore
-```bash
-# Place your IPA file in the packages folder. It needs to be named "com.atebits.Tweetie2.ipa"
-# Then run
-
 ./build.sh --trollstore
-# You'll get BHTwitter-trollstore.ipa in the packages folder.
-```
-
-###  Rootless
-```bash
-# Simply run
-
 ./build.sh --rootless
-# You'll get: com.bandarhl.bhTwitter_4.2_iphoneos-arm64.deb
-```
-
-###  Rootfull
-```bash
-# Simply run
-
 ./build.sh --rootfull
-# You'll get: com.bandarhl.bhTwitter_4.2_iphoneos-arm.deb
 ```
+
+The FFmpeg stack is built from source on first use and reused afterward.
+
+## Build with GitHub Actions
+
+Run **Build NeoFreeBird** from the Actions tab. Select a deployment format and,
+for sideloaded/TrollStore builds, provide a direct URL to a decrypted IPA you
+are authorized to use. The workflow checks out the selected branch/commit and
+its submodules, so fork changes are included in the build.
+
+## Test logs
+
+After installing a test build:
+
+1. Open `Settings > NeoFreeBird > Debug`.
+2. Tap **Export compatibility report**.
+3. Attach the resulting JSON to the GitHub issue or pull request.
+
+The same report is stored inside the app container at
+`Library/Caches/BHTwitter-X12.9-Compatibility.json`. It contains app/build and
+hook-availability information, not account credentials.
+
+## Credits
+
+Built on the work of BHTwitter and NeoFreeBird contributors, with selected
+targeted improvements reviewed from Theacrat's and Orion's NeoFreeBird branches.
