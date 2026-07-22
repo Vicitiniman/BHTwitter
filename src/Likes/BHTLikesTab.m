@@ -249,8 +249,8 @@ static NSString* BHTReadableStatusText(id status) {
             return value;
         }
         if ([value isKindOfClass:NSAttributedString.class] &&
-            [value string].length > 0) {
-            return [value string];
+            ((NSAttributedString*)value).string.length > 0) {
+            return ((NSAttributedString*)value).string;
         }
         id string = BHTSafeValue(value, @"string");
         if ([string isKindOfClass:NSString.class] && [string length] > 0) {
