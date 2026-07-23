@@ -2,9 +2,11 @@
 
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
+#import <mach-o/dyld.h>
 #import <math.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <string.h>
 
 #import "Core/BHTBundle.h"
 #import "Core/BHTSettings.h"
@@ -13,8 +15,17 @@
 
 static NSString* const kBHTLikesPage = @"likes";
 static char kBHTLikesEntryKey;
-static char kBHTSyntheticLikesEntryKey;
-static const long long kBHTLikesPanelID = 0x424854; // "BHT"
+static char kBHTRetainedNativeLikesEntryKey;
+static char kBHTNativeLikesEntryMarkerKey;
+static char kBHTInjectedNativeLikesEntryKey;
+static char kBHTOriginalNativePageKey;
+static char kBHTNativeLikesNavigationMarkerKey;
+static char kBHTNativeLikesControllerKey;
+static char kBHTNativeLikesNavigationKey;
+static const long long kBHTLikesPanelID = 6; // X 12.9 Bookmarks panel
+static const uintptr_t kBHTX129EntryFactoryOffset = 0x6CAFE8;
+static const uintptr_t kBHTX129EntryFactoryJumpTableOffset = 0x1329880;
+static const uintptr_t kBHTX129BookmarksFactoryCaseOffset = 0x6CB26C;
 
 static NSObject* BHTLikesDiagnosticsLock(void) {
     static NSObject* lock;
@@ -29,13 +40,15 @@ static NSMutableDictionary* BHTMutableLikesDiagnostics(void) {
     dispatch_once(&onceToken, ^{
         diagnostics = [@{
             @"activityHistoryInitialTab": @4,
-            @"navigationMode": @"standaloneProtocolCompleteEntry",
+            @"navigationMode": @"nativeBookmarksCarrier",
             @"photoRequestVariant": @"orig",
             @"videoVariantPolicy": @"highestBitrateMP4",
-            @"rootHookInstalled": @NO,
+            @"rootHookInstalled": @YES,
             @"nativeRootCreations": @0,
             @"nativeSurfaceCreations": @0,
-            @"syntheticEntryCreations": @0,
+            @"nativeEntryFactoryAttempts": @0,
+            @"nativeEntryFactorySuccesses": @0,
+            @"nativeNavigationInstalls": @0,
             @"factoryRequests": @0,
             @"contentControllerRequests": @0,
             @"tabActivations": @0,
@@ -1143,103 +1156,232 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
 
 @end
 
-@interface BHTLikesAppNavigationTabEntry
-    : NSObject <T1AppNavigationTabEntry,
-                T1AppNavigationTabEntryContentControllerFactory>
-@property(nonatomic, strong) T1TabView* tabView;
-@property(nonatomic, strong) BHTLikesViewController* likesController;
-@end
+static Class BHTNativeBookmarksEntryClass(void) {
+    return NSClassFromString(
+        @"T1TwitterSwift.BookmarksAppNavigationTabEntry");
+}
 
-@implementation BHTLikesAppNavigationTabEntry
+static Class BHTNativeBookmarksNavigationClass(void) {
+    return NSClassFromString(
+        @"T1TwitterSwift.BookmarksNavigationController");
+}
 
-- (instancetype)init {
-    self = [super init];
-    if (self) {
-        Class tabViewClass = objc_getClass("T1TabView");
-        id tabViewInstance = [tabViewClass alloc];
-        _tabView = [tabViewInstance initWithFrame:CGRectZero
-                                            title:@"My Likes"
-                                        imageName:@"heart_stroke"
-                                          panelID:kBHTLikesPanelID];
-        if (!_tabView) return nil;
-        _tabView.scribePage = kBHTLikesPage;
-        objc_setAssociatedObject(_tabView, &kBHTLikesEntryKey, self,
-                                 OBJC_ASSOCIATION_ASSIGN);
-        BHTIncrementLikesDiagnostic(@"syntheticEntryCreations");
-        BHTSetLikesDiagnostic(@"syntheticEntryClass",
-                              NSStringFromClass([self class]));
-        BHTSetLikesDiagnostic(@"syntheticPanelID", @(kBHTLikesPanelID));
+static uintptr_t BHTT1TwitterImageBase(void) {
+    uint32_t count = _dyld_image_count();
+    for (uint32_t index = 0; index < count; index++) {
+        const char* name = _dyld_get_image_name(index);
+        if (name &&
+            strstr(name, "/T1Twitter.framework/T1Twitter") != NULL) {
+            return (uintptr_t)_dyld_get_image_header(index);
+        }
     }
-    return self;
+    return 0;
 }
 
-- (long long)panelID {
-    return kBHTLikesPanelID;
+static id BHTMakeNativeBookmarksEntry(void) {
+    BHTIncrementLikesDiagnostic(@"nativeEntryFactoryAttempts");
+    uintptr_t imageBase = BHTT1TwitterImageBase();
+    if (imageBase == 0) {
+        BHTSetLikesDiagnostic(@"nativeEntryFactoryFailure",
+                              @"T1TwitterImageNotFound");
+        return nil;
+    }
+
+    // X 12.9 build 10's own panel-entry switch. Its case 6 allocates and
+    // initializes BookmarksAppNavigationTabEntry with the current account.
+    // Validate the switch prologue, panel-6 jump-table target, and invariant
+    // case instructions before calling so another X build is skipped safely
+    // instead of jumping into a changed private function.
+    uintptr_t factoryAddress = imageBase + kBHTX129EntryFactoryOffset;
+    const uint32_t* instructions = (const uint32_t*)factoryAddress;
+    const uint8_t* jumpTable =
+        (const uint8_t*)(imageBase +
+                         kBHTX129EntryFactoryJumpTableOffset);
+    const uint32_t* bookmarksCase =
+        (const uint32_t*)(imageBase +
+                          kBHTX129BookmarksFactoryCaseOffset);
+    if (instructions[0] != 0xD10203FF ||
+        instructions[6] != 0xF1005C1F ||
+        jumpTable[kBHTLikesPanelID] != 0x91 ||
+        bookmarksCase[0] != 0xD2800000 ||
+        bookmarksCase[3] != 0xAA0003F4 ||
+        bookmarksCase[4] != 0xAA1303E0 ||
+        bookmarksCase[6] != 0xAA0003F3) {
+        BHTSetLikesDiagnostic(@"nativeEntryFactoryFailure",
+                              @"X129FactorySignatureMismatch");
+        return nil;
+    }
+
+    id account = BHTCurrentAccount();
+    if (!account) {
+        BHTSetLikesDiagnostic(@"nativeEntryFactoryFailure",
+                              @"CurrentAccountUnavailable");
+        return nil;
+    }
+
+    typedef id (*BHTNativeEntryFactory)(long long, id, id);
+    BHTNativeEntryFactory factory =
+        (BHTNativeEntryFactory)factoryAddress;
+    id entry = factory(kBHTLikesPanelID, account, nil);
+    Class expectedClass = BHTNativeBookmarksEntryClass();
+    T1TabView* tabView = BHTCallObject(entry, @"tabView");
+    if (!entry || !expectedClass ||
+        ![entry isKindOfClass:expectedClass] || !tabView) {
+        BHTSetLikesDiagnostic(@"nativeEntryFactoryFailure",
+                              @"NativeBookmarksEntryValidationFailed");
+        return nil;
+    }
+
+    BHTIncrementLikesDiagnostic(@"nativeEntryFactorySuccesses");
+    BHTSetLikesDiagnostic(@"nativeCarrierClass",
+                          NSStringFromClass([entry class]));
+    BHTSetLikesDiagnostic(@"nativeCarrierPanelID",
+                          @(tabView.panelID));
+    return entry;
 }
 
-- (BOOL)isExcludedFromTabBar {
-    return NO;
+BOOL BHTIsNativeLikesEntry(id entry) {
+    return [objc_getAssociatedObject(entry,
+                                     &kBHTNativeLikesEntryMarkerKey)
+        boolValue];
 }
 
-- (BOOL)isTabViewSideBarOnly {
-    return NO;
+static void BHTConfigureNativeLikesEntry(id entry, BOOL injected) {
+    T1TabView* tabView = BHTCallObject(entry, @"tabView");
+    if (!entry || !tabView) return;
+    if (!objc_getAssociatedObject(tabView, &kBHTOriginalNativePageKey)) {
+        objc_setAssociatedObject(
+            tabView, &kBHTOriginalNativePageKey,
+            tabView.scribePage.length ? tabView.scribePage : @"bookmarks",
+            OBJC_ASSOCIATION_COPY_NONATOMIC);
+    }
+    objc_setAssociatedObject(entry, &kBHTNativeLikesEntryMarkerKey, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(entry, &kBHTInjectedNativeLikesEntryKey,
+                             @(injected),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(tabView, &kBHTLikesEntryKey, entry,
+                             OBJC_ASSOCIATION_ASSIGN);
+    tabView.scribePage = kBHTLikesPage;
 }
 
-- (id<T1AppNavigationTabEntryContentControllerFactory>)contentControllerFactory {
-    // This mirrors X 12.9's native BookmarksAppNavigationTabEntry: the entry
-    // is also its own content-controller factory. Omitting this required
-    // selector made X terminate before it ever requested our root controller.
-    BHTIncrementLikesDiagnostic(@"factoryRequests");
-    return self;
+static void BHTRestoreNativeEntryPage(id entry) {
+    T1TabView* tabView = BHTCallObject(entry, @"tabView");
+    NSString* original =
+        objc_getAssociatedObject(tabView, &kBHTOriginalNativePageKey);
+    if (original.length > 0) tabView.scribePage = original;
+    objc_setAssociatedObject(tabView, &kBHTLikesEntryKey, nil,
+                             OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(tabView, &kBHTNativeLikesNavigationKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(entry, &kBHTNativeLikesEntryMarkerKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-- (BHTLikesViewController*)likesControllerCreatingIfNeeded {
-    if (!self.likesController) {
-        self.likesController = [BHTLikesViewController new];
+void BHTRecordNativeLikesFactoryRequest(BOOL contentController) {
+    BHTIncrementLikesDiagnostic(contentController
+                                    ? @"contentControllerRequests"
+                                    : @"factoryRequests");
+}
+
+BOOL BHTIsNativeLikesNavigationController(UIViewController* controller) {
+    return [objc_getAssociatedObject(
+        controller, &kBHTNativeLikesNavigationMarkerKey) boolValue];
+}
+
+static void BHTMarkNativeLikesNavigationController(
+    UIViewController* controller) {
+    if (!controller) return;
+    objc_setAssociatedObject(controller,
+                             &kBHTNativeLikesNavigationMarkerKey, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    BHTSetLikesDiagnostic(@"nativeNavigationClass",
+                          NSStringFromClass([controller class]));
+}
+
+void BHTConnectNativeLikesNavigationController(
+    UIViewController* controller, UIView* tabView) {
+    if (!controller || !tabView) return;
+    BHTMarkNativeLikesNavigationController(controller);
+    objc_setAssociatedObject(tabView, &kBHTNativeLikesNavigationKey,
+                             controller,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+void BHTConnectNativeLikesNavigationTree(UIViewController* root, id entry) {
+    UIViewController* navigation =
+        BHTFindController(root, BHTNativeBookmarksNavigationClass());
+    UIView* tabView = BHTCallObject(entry, @"tabView");
+    if (navigation && tabView) {
+        BHTConnectNativeLikesNavigationController(navigation, tabView);
+    }
+}
+
+static BHTLikesViewController*
+BHTLikesControllerForNativeNavigation(UIViewController* navigation,
+                                      BOOL create) {
+    BHTLikesViewController* likes =
+        objc_getAssociatedObject(navigation, &kBHTNativeLikesControllerKey);
+    if (!likes && create) {
+        likes = [BHTLikesViewController new];
+        objc_setAssociatedObject(navigation, &kBHTNativeLikesControllerKey,
+                                 likes,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         BHTIncrementLikesDiagnostic(@"nativeRootCreations");
         BHTIncrementLikesDiagnostic(@"nativeSurfaceCreations");
-        BHTSetLikesDiagnostic(@"rootEntryClass",
-                              NSStringFromClass([self class]));
         BHTSetLikesDiagnostic(@"standaloneRootClass",
-                              NSStringFromClass([self.likesController class]));
+                              NSStringFromClass([likes class]));
         BHTSetLikesDiagnostic(@"postsControllerClass",
-            self.likesController.postsController
-                ? NSStringFromClass(
-                      [self.likesController.postsController class])
+            likes.postsController
+                ? NSStringFromClass([likes.postsController class])
                 : @"");
     }
-    return self.likesController;
+    return likes;
 }
 
-- (UIViewController*)createContentController {
-    BHTIncrementLikesDiagnostic(@"contentControllerRequests");
-    return [self likesControllerCreatingIfNeeded];
-}
+void BHTInstallNativeLikesNavigationController(
+    UIViewController* navigation, BOOL resetToNewest) {
+    if (![BHTSettings boolForKey:@"enable_likes_tab"] ||
+        !BHTIsNativeLikesNavigationController(navigation)) {
+        return;
+    }
 
-- (UIViewController*)rootTabViewController {
-    return [self likesControllerCreatingIfNeeded];
-}
+    BHTLikesViewController* likes =
+        BHTLikesControllerForNativeNavigation(navigation, YES);
+    if (!likes) return;
 
-@end
+    if ([navigation isKindOfClass:UINavigationController.class]) {
+        UINavigationController* nativeNavigation =
+            (UINavigationController*)navigation;
+        if (nativeNavigation.viewControllers.count != 1 ||
+            nativeNavigation.viewControllers.firstObject != likes) {
+            [nativeNavigation setViewControllers:@[likes] animated:NO];
+            BHTIncrementLikesDiagnostic(@"nativeNavigationInstalls");
+        }
+    } else if (likes.parentViewController != navigation) {
+        [navigation addChildViewController:likes];
+        likes.view.frame = navigation.view.bounds;
+        likes.view.autoresizingMask =
+            UIViewAutoresizingFlexibleWidth |
+            UIViewAutoresizingFlexibleHeight;
+        [navigation.view addSubview:likes.view];
+        [likes didMoveToParentViewController:navigation];
+        BHTIncrementLikesDiagnostic(@"nativeNavigationInstalls");
+    }
+
+    if (resetToNewest) [likes resetToNewest];
+}
 
 static void BHTActivateLikesTabViewNow(T1TabView* view) {
     if (![BHTSettings boolForKey:@"enable_likes_tab"] || !view.isSelected ||
         ![view.scribePage isEqualToString:kBHTLikesPage]) {
         return;
     }
-    id entry = objc_getAssociatedObject(view, &kBHTLikesEntryKey);
-    id root = BHTCallObject(entry, @"rootTabViewController");
-    BHTLikesViewController* likes =
-        [root isKindOfClass:BHTLikesViewController.class] ? root : nil;
-    if (![likes isKindOfClass:BHTLikesViewController.class]) return;
+    UIViewController* navigation =
+        objc_getAssociatedObject(view, &kBHTNativeLikesNavigationKey);
+    if (!navigation) return;
     BHTIncrementLikesDiagnostic(@"tabActivations");
-
-    UINavigationController* navigation = likes.navigationController;
-    if (navigation && [navigation.viewControllers containsObject:likes] &&
-        navigation.topViewController != likes) {
-        [navigation popToViewController:likes animated:NO];
-    }
-    [likes resetToNewest];
+    BHTInstallNativeLikesNavigationController(navigation, YES);
 }
 
 void BHTActivateLikesTabView(UIView* view) {
@@ -1255,13 +1397,26 @@ void BHTActivateLikesTabView(UIView* view) {
 NSArray* BHTEntriesByInstallingLikesDestination(NSArray* entries) {
     BOOL enabled = [BHTSettings boolForKey:@"enable_likes_tab"];
     NSMutableArray* result = [entries mutableCopy] ?: [NSMutableArray array];
-    BHTLikesAppNavigationTabEntry* likesEntry = nil;
+    id likesEntry = nil;
     id anchor = nil;
+    Class nativeEntryClass = BHTNativeBookmarksEntryClass();
 
     for (id entry in [result copy]) {
-        if ([entry isKindOfClass:BHTLikesAppNavigationTabEntry.class]) {
+        if (BHTIsNativeLikesEntry(entry)) {
             likesEntry = entry;
-            if (!enabled) [result removeObjectIdenticalTo:entry];
+            if (!enabled) {
+                BOOL injected =
+                    [objc_getAssociatedObject(
+                        entry, &kBHTInjectedNativeLikesEntryKey) boolValue];
+                BHTRestoreNativeEntryPage(entry);
+                if (injected) [result removeObjectIdenticalTo:entry];
+            }
+            continue;
+        }
+        if (enabled && nativeEntryClass &&
+            [entry isKindOfClass:nativeEntryClass] && !likesEntry) {
+            likesEntry = entry;
+            BHTConfigureNativeLikesEntry(entry, NO);
             continue;
         }
         if (!anchor) anchor = entry;
@@ -1269,16 +1424,21 @@ NSArray* BHTEntriesByInstallingLikesDestination(NSArray* entries) {
 
     if (enabled && !likesEntry) {
         likesEntry =
-            objc_getAssociatedObject(anchor, &kBHTSyntheticLikesEntryKey);
-        if (!likesEntry) {
-            likesEntry = [BHTLikesAppNavigationTabEntry new];
+            objc_getAssociatedObject(anchor,
+                                     &kBHTRetainedNativeLikesEntryKey);
+        if (![likesEntry isKindOfClass:nativeEntryClass]) {
+            likesEntry = BHTMakeNativeBookmarksEntry();
             if (anchor && likesEntry) {
-                objc_setAssociatedObject(anchor, &kBHTSyntheticLikesEntryKey,
+                objc_setAssociatedObject(anchor,
+                                         &kBHTRetainedNativeLikesEntryKey,
                                          likesEntry,
                                          OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
         }
-        if (likesEntry) [result addObject:likesEntry];
+        if (likesEntry) {
+            BHTConfigureNativeLikesEntry(likesEntry, YES);
+            [result addObject:likesEntry];
+        }
     }
 
     return result;
