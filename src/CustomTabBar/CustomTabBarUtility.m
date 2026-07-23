@@ -102,18 +102,18 @@ static NSString* const kLegacyHiddenKey = @"bh_tabs_hidden";
     // has refreshed the registry.
     if ([BHTSettings boolForKey:@"enable_likes_tab"]) {
         NSDictionary* likes = nil;
-        NSDictionary* grok = nil;
         for (NSDictionary* entry in tabs) {
             NSString* page = entry[TabPageKey];
             if ([page isEqualToString:@"likes"]) likes = entry;
-            if ([page isEqualToString:@"grok"]) grok = entry;
         }
         if (!likes) {
             [tabs addObject:@{
                 TabPageKey: @"likes",
                 TabTitleKey: @"My Likes",
                 TabImageKey: @"heart_stroke",
-                TabPanelIDKey: grok[TabPanelIDKey] ?: @(-1)
+                // X's native entry factory uses panel 6 for the Bookmarks
+                // carrier backing the separate Likes destination.
+                TabPanelIDKey: @(6)
             }];
         }
     }

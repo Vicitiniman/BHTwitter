@@ -16,10 +16,7 @@ static UIImage* BHTLikesHeartImage(BOOL selected) {
                                                         weight:UIImageSymbolWeightRegular];
     UIImage* image = [UIImage systemImageNamed:selected ? @"heart.fill" : @"heart"
                               withConfiguration:configuration];
-    UIColor* color = selected ? CurrentAccentColor()
-                              : UIColor.secondaryLabelColor;
-    return [[image imageWithTintColor:color]
-        imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
 static void BHTFindLargestImageView(UIView* root, UIImageView** best,
@@ -83,6 +80,76 @@ static void BHTApplyLikesHeartToNativeBar(T1TabBarViewController* controller) {
         item.accessibilityLabel = @"Likes";
     }
 }
+
+// X 12.9's navigation registry rejects an independently implemented
+// Objective-C entry before sending it any protocol messages. The Likes entry is
+// therefore a genuine BookmarksAppNavigationTabEntry made by X's own factory.
+// These hooks keep its native lifecycle intact and replace only its controller.
+%hook _TtC14T1TwitterSwift30BookmarksAppNavigationTabEntry
+
+- (id)contentControllerFactory {
+    BOOL isLikes = BHTIsNativeLikesEntry(self);
+    if (isLikes) BHTRecordNativeLikesFactoryRequest(NO);
+    return %orig;
+}
+
+- (UIViewController*)createContentController {
+    BOOL isLikes = BHTIsNativeLikesEntry(self);
+    if (isLikes) BHTRecordNativeLikesFactoryRequest(YES);
+    UIViewController* controller = %orig;
+    if (isLikes) {
+        Class navigationClass =
+            NSClassFromString(@"T1TwitterSwift.BookmarksNavigationController");
+        if (navigationClass &&
+            [controller isKindOfClass:navigationClass]) {
+            T1TabView* tabView =
+                [self respondsToSelector:@selector(tabView)]
+                    ? [self tabView]
+                    : nil;
+            BHTConnectNativeLikesNavigationController(controller, tabView);
+        } else {
+            BHTConnectNativeLikesNavigationTree(controller, self);
+        }
+    }
+    return controller;
+}
+
+- (UIViewController*)rootTabViewController {
+    BOOL isLikes = BHTIsNativeLikesEntry(self);
+    UIViewController* root = %orig;
+    if (isLikes) BHTConnectNativeLikesNavigationTree(root, self);
+    return root;
+}
+
+%end
+
+%hook _TtC14T1TwitterSwift29BookmarksNavigationController
+
+- (id)initWithAccount:(id)account tabView:(T1TabView*)tabView {
+    id controller = %orig(account, tabView);
+    if ([tabView.scribePage isEqualToString:BHTLikesPageID()]) {
+        BHTConnectNativeLikesNavigationController(controller, tabView);
+    }
+    return controller;
+}
+
+- (void)viewDidLoad {
+    %orig;
+    if (BHTIsNativeLikesNavigationController((UIViewController*)self)) {
+        BHTInstallNativeLikesNavigationController(
+            (UIViewController*)self, NO);
+    }
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig(animated);
+    if (BHTIsNativeLikesNavigationController((UIViewController*)self)) {
+        BHTInstallNativeLikesNavigationController(
+            (UIViewController*)self, NO);
+    }
+}
+
+%end
 
 // Capture the native private Likes timeline after the ad/timeline filters have
 // done their work.  The native controller remains responsible for pagination.
