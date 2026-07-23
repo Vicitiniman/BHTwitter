@@ -91,6 +91,23 @@
     }
 }
 
+- (void)showLikesNavigationVC:(NSDictionary*)sender {
+    Class editorClass = objc_getClass("BHTLikesNavigationViewController");
+    if (!editorClass) return;
+
+    UIViewController* editor = [[editorClass alloc] init];
+    if (self.account) {
+        [editor.navigationItem
+            setTitleView:
+                [objc_getClass("TFNTitleView")
+                    titleViewWithTitle:[[BHTBundle sharedBundle]
+                                           localizedStringForKey:
+                                               @"LIKES_NAVIGATION_SETTINGS_TITLE"]
+                              subtitle:self.account.displayUsername]];
+    }
+    [self.navigationController pushViewController:editor animated:YES];
+}
+
 #pragma mark - Tab Bar Refresh
 
 - (void)refreshAllTabViewsWithTheming {

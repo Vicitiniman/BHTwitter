@@ -18,6 +18,24 @@
 @property (nonatomic, strong) UIImageView* iconView;
 @end
 
+static UIImage* CustomTabBarPreviewImage(NSString* imageName, CGSize size) {
+    UIColor* color = CustomTabBarIconColor();
+    if ([imageName hasPrefix:@"sf:"]) {
+        UIImageSymbolConfiguration* configuration =
+            [UIImageSymbolConfiguration
+                configurationWithPointSize:MIN(size.width, size.height)
+                                    weight:UIImageSymbolWeightRegular];
+        UIImage* image =
+            [UIImage systemImageNamed:[imageName substringFromIndex:3]
+                     withConfiguration:configuration];
+        return [[image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]
+            imageWithTintColor:color];
+    }
+    return [UIImage tfn_vectorImageNamed:imageName
+                                fitsSize:size
+                               fillColor:color];
+}
+
 @implementation CustomTabBarPreviewCell
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -59,9 +77,7 @@
 - (void)configureWithImageName:(NSString*)imageName {
     if (imageName.length) {
         self.iconView.image =
-            [UIImage tfn_vectorImageNamed:imageName
-                                 fitsSize:CGSizeMake(24, 24)
-                                fillColor:CustomTabBarIconColor()];
+            CustomTabBarPreviewImage(imageName, CGSizeMake(24, 24));
     } else {
         self.iconView.image = nil;
     }

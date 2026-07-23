@@ -1,5 +1,6 @@
 #import "HookHelpers.h"
 #import "Likes/BHTLikesTab.h"
+#import "Likes/BHTLikesNavigationUtility.h"
 
 static id BHTLikesSafeValue(id object, NSString* key) {
     if (!object || key.length == 0) return nil;
@@ -46,7 +47,7 @@ static UIImageView* BHTLikesIconView(T1TabView* tabView) {
 }
 
 static void BHTApplyLikesHeartToTab(T1TabView* tabView) {
-    if (![BHTSettings boolForKey:@"enable_likes_tab"] ||
+    if (![CustomTabBarUtility likesTabEnabled] ||
         ![tabView.scribePage isEqualToString:BHTLikesPageID()]) {
         return;
     }
@@ -54,12 +55,15 @@ static void BHTApplyLikesHeartToTab(T1TabView* tabView) {
     if (imageView) {
         imageView.image = BHTLikesHeartImage(tabView.selected);
         imageView.contentMode = UIViewContentModeCenter;
+        imageView.tintColor =
+            tabView.selected ? CurrentAccentColor()
+                             : UIColor.secondaryLabelColor;
         imageView.accessibilityLabel = @"Likes";
     }
 }
 
 static void BHTApplyLikesHeartToNativeBar(T1TabBarViewController* controller) {
-    if (![BHTSettings boolForKey:@"enable_likes_tab"]) return;
+    if (![CustomTabBarUtility likesTabEnabled]) return;
     UITabBar* tabBar = nil;
     for (NSString* key in @[@"nativeTabBar", @"tabBar"]) {
         id value = BHTLikesSafeValue(controller, key);
@@ -80,6 +84,256 @@ static void BHTApplyLikesHeartToNativeBar(T1TabBarViewController* controller) {
         item.accessibilityLabel = @"Likes";
     }
 }
+
+// MARK: - Native Activity History ordering
+
+@interface BHTUnifiedSegmentedController : UIViewController
+- (void)reloadDataWithSelectingIndex:(NSInteger)index;
+@end
+
+static char kBHTActivityOriginalCountKey;
+static char kBHTActivityConfigurationReadyKey;
+static char kBHTActivityAppliedSignatureKey;
+
+static NSInteger BHTActivityOriginalCount(UIViewController* controller) {
+    NSNumber* count =
+        objc_getAssociatedObject(controller, &kBHTActivityOriginalCountKey);
+    // The compatibility report and the decrypted X 12.9 implementation both
+    // confirm four pages. This fallback is used only if the V1/V2 count method
+    // has not yet run.
+    return count ? count.integerValue : 4;
+}
+
+static void BHTRememberActivityOriginalCount(UIViewController* controller,
+                                             NSInteger count) {
+    if (count <= 0) return;
+    objc_setAssociatedObject(controller, &kBHTActivityOriginalCountKey,
+                             @(count),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static BOOL BHTActivityConfigurationActive(UIViewController* controller) {
+    return BHTIsManagedLikesActivityHistoryController(controller) &&
+           [objc_getAssociatedObject(
+               controller, &kBHTActivityConfigurationReadyKey) boolValue];
+}
+
+static NSInteger BHTActivityOriginalIndex(UIViewController* controller,
+                                          NSInteger visibleIndex) {
+    if (!BHTActivityConfigurationActive(controller)) return visibleIndex;
+    NSInteger mapped = [BHTLikesNavigationUtility
+        originalIndexForVisibleIndex:visibleIndex
+                       originalCount:BHTActivityOriginalCount(controller)];
+    return mapped == NSNotFound ? visibleIndex : mapped;
+}
+
+static double BHTActivityOriginalFractionalIndex(
+    UIViewController* controller, double visibleIndex) {
+    if (!BHTActivityConfigurationActive(controller) || visibleIndex < 0) {
+        return visibleIndex;
+    }
+    NSInteger lower = floor(visibleIndex);
+    NSInteger upper = ceil(visibleIndex);
+    NSInteger mappedLower =
+        BHTActivityOriginalIndex(controller, lower);
+    NSInteger mappedUpper =
+        BHTActivityOriginalIndex(controller, upper);
+    double fraction = visibleIndex - lower;
+    return mappedLower + (mappedUpper - mappedLower) * fraction;
+}
+
+static UIViewController* BHTFindUnifiedSegmentedController(
+    UIViewController* controller) {
+    Class wanted =
+        NSClassFromString(@"TFNUISwift.UnifiedSegmentedController");
+    if (wanted && [controller isKindOfClass:wanted]) return controller;
+    for (UIViewController* child in controller.childViewControllers) {
+        UIViewController* found =
+            BHTFindUnifiedSegmentedController(child);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static void BHTApplyActivityHistoryConfiguration(
+    UIViewController* controller) {
+    if (!BHTActivityConfigurationActive(controller)) return;
+    NSInteger originalCount = BHTActivityOriginalCount(controller);
+    NSArray<NSString*>* order = [BHTLikesNavigationUtility
+        visiblePageIDsForOriginalCount:originalCount];
+    NSString* signature =
+        [NSString stringWithFormat:@"%ld:%@",
+                                   (long)originalCount,
+                                   [order componentsJoinedByString:@","]];
+    NSString* applied =
+        objc_getAssociatedObject(controller,
+                                 &kBHTActivityAppliedSignatureKey);
+    if ([applied isEqualToString:signature]) return;
+
+    BHTUnifiedSegmentedController* segmented =
+        (BHTUnifiedSegmentedController*)
+            BHTFindUnifiedSegmentedController(controller);
+    if (![segmented
+            respondsToSelector:@selector(reloadDataWithSelectingIndex:)]) {
+        return;
+    }
+
+    NSInteger targetIndex = [BHTLikesNavigationUtility
+        visibleIndexForPageID:BHTLikesPostsPageID
+                originalCount:originalCount];
+    if (targetIndex == NSNotFound) targetIndex = 0;
+    [segmented reloadDataWithSelectingIndex:targetIndex];
+    objc_setAssociatedObject(controller,
+                             &kBHTActivityAppliedSignatureKey,
+                             signature,
+                             OBJC_ASSOCIATION_COPY_NONATOMIC);
+}
+
+void BHTRefreshLikesActivityHistoryConfiguration(
+    UIViewController* rootController) {
+    if (!rootController) return;
+    Class activityClass = NSClassFromString(
+        @"XActivityHistory.ActivityHistoryContainerViewController");
+    if (activityClass &&
+        [rootController isKindOfClass:activityClass]) {
+        BHTApplyActivityHistoryConfiguration(rootController);
+    }
+    for (UIViewController* child in
+         rootController.childViewControllers) {
+        BHTRefreshLikesActivityHistoryConfiguration(child);
+    }
+}
+
+// This Swift controller is the native Bookmarks / Videos / Articles / Likes
+// surface. The hooks are gated by the BHTLikesViewController ancestor, so X's
+// stock Activity History screen and Grok destination are never modified.
+%hook _TtC16XActivityHistory38ActivityHistoryContainerViewController
+
+- (NSInteger)numberOfTabsV1In:(id)segmentedController {
+    NSInteger originalCount = %orig;
+    if (BHTIsManagedLikesActivityHistoryController(
+            (UIViewController*)self)) {
+        BHTRememberActivityOriginalCount((UIViewController*)self,
+                                         originalCount);
+    }
+    if (!BHTActivityConfigurationActive((UIViewController*)self)) {
+        return originalCount;
+    }
+    return [BHTLikesNavigationUtility
+        visiblePageIDsForOriginalCount:originalCount].count;
+}
+
+- (NSInteger)numberOfTabsV2In:(id)segmentedController {
+    NSInteger originalCount = %orig;
+    if (BHTIsManagedLikesActivityHistoryController(
+            (UIViewController*)self)) {
+        BHTRememberActivityOriginalCount((UIViewController*)self,
+                                         originalCount);
+    }
+    if (!BHTActivityConfigurationActive((UIViewController*)self)) {
+        return originalCount;
+    }
+    return [BHTLikesNavigationUtility
+        visiblePageIDsForOriginalCount:originalCount].count;
+}
+
+- (UIViewController*)unifiedSegmentedController:(id)controller
+                      v1ViewControllerAtIndex:(NSInteger)index {
+    return %orig(controller,
+                 BHTActivityOriginalIndex((UIViewController*)self, index));
+}
+
+- (NSString*)unifiedSegmentedController:(id)controller
+                         v1TitleAtIndex:(NSInteger)index {
+    return %orig(controller,
+                 BHTActivityOriginalIndex((UIViewController*)self, index));
+}
+
+- (NSInteger)unifiedSegmentedController:(id)controller
+                         v1CaretAtIndex:(NSInteger)index {
+    return %orig(controller,
+                 BHTActivityOriginalIndex((UIViewController*)self, index));
+}
+
+- (UIViewController*)unifiedSegmentedController:(id)controller
+                      v2ViewControllerAtIndex:(NSInteger)index {
+    return %orig(controller,
+                 BHTActivityOriginalIndex((UIViewController*)self, index));
+}
+
+- (id)unifiedSegmentedController:(id)controller
+             v2DescriptorAtIndex:(NSInteger)index {
+    return %orig(controller,
+                 BHTActivityOriginalIndex((UIViewController*)self, index));
+}
+
+- (void)unifiedSegmentedController:(id)controller
+          willSelectViewController:(UIViewController*)viewController
+                           atIndex:(NSInteger)index
+                      indexChanged:(BOOL)indexChanged {
+    %orig(controller, viewController,
+          BHTActivityOriginalIndex((UIViewController*)self, index),
+          indexChanged);
+}
+
+- (void)unifiedSegmentedController:(id)controller
+           didSelectViewController:(UIViewController*)viewController
+                           atIndex:(NSInteger)index
+                     previousIndex:(NSInteger)previousIndex
+                           trigger:(NSInteger)trigger {
+    NSInteger mappedPrevious =
+        previousIndex < 0
+            ? previousIndex
+            : BHTActivityOriginalIndex((UIViewController*)self,
+                                       previousIndex);
+    %orig(controller, viewController,
+          BHTActivityOriginalIndex((UIViewController*)self, index),
+          mappedPrevious, trigger);
+}
+
+- (void)unifiedSegmentedController:(id)controller
+        didScrollToFractionalIndex:(double)index {
+    %orig(controller,
+          BHTActivityOriginalFractionalIndex(
+              (UIViewController*)self, index));
+}
+
+- (void)unifiedSegmentedController:(id)controller
+                  didTapTabAtIndex:(NSInteger)index {
+    %orig(controller,
+          BHTActivityOriginalIndex((UIViewController*)self, index));
+}
+
+- (void)unifiedSegmentedController:(id)controller
+                didLongPressAtIndex:(NSInteger)index {
+    %orig(controller,
+          BHTActivityOriginalIndex((UIViewController*)self, index));
+}
+
+- (void)viewDidLoad {
+    // Let X safely build its verified four-page controller first. Enabling the
+    // remap only after that transaction avoids feeding a hidden/reordered index
+    // into its one-time initial-tab resolver.
+    %orig;
+    if (BHTIsManagedLikesActivityHistoryController(
+            (UIViewController*)self)) {
+        objc_setAssociatedObject(
+            self, &kBHTActivityConfigurationReadyKey, @YES,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        __weak UIViewController* weakController =
+            (UIViewController*)self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BHTApplyActivityHistoryConfiguration(weakController);
+        });
+    }
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig(animated);
+    BHTApplyActivityHistoryConfiguration((UIViewController*)self);
+}
+
+%end
 
 // X 12.9's navigation registry rejects an independently implemented
 // Objective-C entry before sending it any protocol messages. The Likes entry is
