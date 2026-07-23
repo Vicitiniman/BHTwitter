@@ -1152,10 +1152,12 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _tabView = [[T1TabView alloc] initWithFrame:CGRectZero
-                                              title:@"My Likes"
-                                          imageName:@"heart_stroke"
-                                            panelID:kBHTLikesPanelID];
+        Class tabViewClass = objc_getClass("T1TabView");
+        id tabViewInstance = [tabViewClass alloc];
+        _tabView = [tabViewInstance initWithFrame:CGRectZero
+                                            title:@"My Likes"
+                                        imageName:@"heart_stroke"
+                                          panelID:kBHTLikesPanelID];
         if (!_tabView) return nil;
         _tabView.scribePage = kBHTLikesPage;
         objc_setAssociatedObject(_tabView, &kBHTLikesEntryKey, self,
