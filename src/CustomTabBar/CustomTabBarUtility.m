@@ -6,7 +6,6 @@
 //
 
 #import "CustomTabBarUtility.h"
-#import "Core/BHTSettings.h"
 #import "Headers/T1Headers.h"
 
 // The Home tab is the app's landing surface, so it is always kept visible,
@@ -97,25 +96,22 @@ static NSString* const kLegacyHiddenKey = @"bh_tabs_hidden";
 + (NSArray<NSDictionary*>*)availableTabs {
     NSMutableArray<NSDictionary*>* tabs = [[self registry] mutableCopy];
 
-    // Older saved registries can predate the standalone Likes entry. Keep it
-    // available as a first-class movable item even before the live tab capture
-    // has refreshed the registry.
-    if ([BHTSettings boolForKey:@"enable_likes_tab"]) {
-        NSDictionary* likes = nil;
-        for (NSDictionary* entry in tabs) {
-            NSString* page = entry[TabPageKey];
-            if ([page isEqualToString:@"likes"]) likes = entry;
-        }
-        if (!likes) {
-            [tabs addObject:@{
-                TabPageKey: @"likes",
-                TabTitleKey: @"My Likes",
-                TabImageKey: @"heart_stroke",
-                // X's native entry factory uses panel 6 for the Bookmarks
-                // carrier backing the separate Likes destination.
-                TabPanelIDKey: @(6)
-            }];
-        }
+    // Likes is always offered in the editor. Including its page ID in the
+    // visible list is now the sole user-facing on/off control.
+    NSDictionary* likes = nil;
+    for (NSDictionary* entry in tabs) {
+        NSString* page = entry[TabPageKey];
+        if ([page isEqualToString:@"likes"]) likes = entry;
+    }
+    if (!likes) {
+        [tabs addObject:@{
+            TabPageKey: @"likes",
+            TabTitleKey: @"My Likes",
+            TabImageKey: @"heart_stroke",
+            // X's native entry factory uses panel 6 for the Bookmarks carrier
+            // backing the separate Likes destination.
+            TabPanelIDKey: @(6)
+        }];
     }
     return [tabs copy];
 }
@@ -145,16 +141,37 @@ static NSString* const kLegacyHiddenKey = @"bh_tabs_hidden";
     return pageIDs;
 }
 
++ (BOOL)likesTabEnabled {
+    NSArray<NSString*>* saved =
+        [[NSUserDefaults standardUserDefaults] stringArrayForKey:kVisibleKey];
+    if (saved) {
+        return [saved containsObject:@"likes"];
+    }
+
+    // One-time compatibility with beta.8, where this lived as a Timelines
+    // toggle. Once the navigation editor saves, its ordered list wins.
+    id legacy =
+        [[NSUserDefaults standardUserDefaults] objectForKey:@"enable_likes_tab"];
+    return [legacy boolValue];
+}
+
 + (void)setVisiblePageIDs:(NSArray<NSString*>*)visible {
-    [[NSUserDefaults standardUserDefaults] setObject:visible forKey:kVisibleKey];
-    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kLegacyHiddenKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setObject:visible forKey:kVisibleKey];
+    [defaults removeObjectForKey:kLegacyHiddenKey];
+    // Keep the deprecated key synchronized for compatibility reports and
+    // migrations from builds that still read it.
+    [defaults setBool:[visible containsObject:@"likes"]
+               forKey:@"enable_likes_tab"];
+    [defaults synchronize];
 }
 
 + (void)resetSelection {
-    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kVisibleKey];
-    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kLegacyHiddenKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    [defaults removeObjectForKey:kVisibleKey];
+    [defaults removeObjectForKey:kLegacyHiddenKey];
+    [defaults setBool:NO forKey:@"enable_likes_tab"];
+    [defaults synchronize];
 }
 
 + (NSArray<NSString*>*)defaultVisiblePageIDs {

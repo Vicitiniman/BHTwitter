@@ -7,7 +7,6 @@
 
 #import "Settings/Pages/TimelinesSettingsViewController.h"
 #import "Headers/TWHeaders.h"
-#import "Likes/BHTLikesTab.h"
 
 extern void applyHideCustomTimelinesSetting(void);
 
@@ -22,8 +21,6 @@ extern void applyHideCustomTimelinesSetting(void);
     NSString* key = objc_getAssociatedObject(sender, @"prefKey");
     if ([key isEqualToString:@"hide_custom_timelines"]) {
         applyHideCustomTimelinesSetting();
-    } else if ([key isEqualToString:@"enable_likes_tab"]) {
-        BHTRefreshVisibleAppTabs();
     }
 }
 

@@ -38,6 +38,10 @@ extern NSString* const TabPanelIDKey; // T1 panel ID (NSNumber)
 // default.
 + (nullable NSArray<NSString*>*)visiblePageIDsInOrder;
 
+// Whether the standalone Likes destination is selected in this editor. Before
+// the first editor save, this also migrates beta.8's former timeline toggle.
++ (BOOL)likesTabEnabled;
+
 // Persists the editor's selection; every other tab is hidden.
 + (void)setVisiblePageIDs:(NSArray<NSString*>*)visible;
 

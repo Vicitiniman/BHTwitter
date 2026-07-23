@@ -12,7 +12,6 @@
 #import "CustomTabBarViewController.h"
 #import <objc/runtime.h>
 #import "Core/BHTBundle.h"
-#import "Core/BHTSettings.h"
 #import "Core/TwitterChirpFont.h"
 #import "CustomTabBarCell.h"
 #import "CustomTabBarNativeColors.h"
@@ -211,7 +210,6 @@ static NSString* const kGridFooterID = @"gridFooter";
     // Offer the captured tabs the account genuinely has; panels that only exist
     // because of the tweak's forced gates stay out of the grid.
     self.allPages = [NSMutableArray array];
-    BOOL likesEnabled = [BHTSettings boolForKey:@"enable_likes_tab"];
     for (NSDictionary* entry in [CustomTabBarUtility availableTabs]) {
         NSNumber* panelID = entry[TabPanelIDKey];
         NSString* pageID = entry[TabPageKey];
@@ -220,15 +218,16 @@ static NSString* const kGridFooterID = @"gridFooter";
             !panelIsGenuinelyAvailable(panelID.longLongValue)) {
             continue;
         }
-        if (isLikes && !likesEnabled) {
-            continue;
-        }
         [self.allPages addObject:pageID];
     }
 
     NSArray<NSString*>* saved = [CustomTabBarUtility visiblePageIDsInOrder];
-    NSArray<NSString*>* source =
-        saved ?: [CustomTabBarUtility defaultVisiblePageIDs];
+    NSMutableArray<NSString*>* source =
+        [saved ?: [CustomTabBarUtility defaultVisiblePageIDs] mutableCopy];
+    if (!saved && [CustomTabBarUtility likesTabEnabled] &&
+        ![source containsObject:BHTLikesPageID()]) {
+        [source addObject:BHTLikesPageID()];
+    }
 
     self.selectedPages = [NSMutableArray array];
     for (NSString* page in source) {

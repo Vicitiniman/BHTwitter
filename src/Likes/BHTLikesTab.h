@@ -16,14 +16,20 @@ void BHTConnectNativeLikesNavigationTree(UIViewController* root, id entry);
 void BHTInstallNativeLikesNavigationController(UIViewController* controller,
                                                BOOL resetToNewest);
 
+// True only for an Activity History controller embedded in NeoFreeBird's
+// standalone Likes destination. Stock Grok/Bookmarks history stays untouched.
+BOOL BHTIsManagedLikesActivityHistoryController(
+    UIViewController* controller);
+void BHTRefreshLikesActivityHistoryConfiguration(
+    UIViewController* rootController);
+
 // Called by the timeline section hook while a private Likes timeline is active.
 // Returns YES when the data controller belongs to the private Likes timeline,
 // allowing the caller to suppress X's saved scroll-position restoration.
 BOOL BHTCaptureLikesSections(UIViewController* dataViewController, NSArray* sections);
 
-// Called when the real tab changes from unselected to selected. This resets
-// both Posts and Media to their newest item without disturbing swipe-back from
-// a post or the media pager.
+// Called when the real tab changes from unselected to selected. It reconnects
+// the retained native controller without changing its scroll position.
 void BHTActivateLikesTabView(UIView* tabView);
 
 // Privacy-safe runtime diagnostics included in the compatibility export.

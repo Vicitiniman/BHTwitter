@@ -55,6 +55,11 @@ static NSDictionary<NSString*, NSDictionary*>* BHTSettingsPages(void) {
                         @"action": @"showCustomTabBarVC:",
                         @"type": @"button"
                     },
+                    @{
+                        @"titleKey": @"LIKES_NAVIGATION_EDITOR_TITLE",
+                        @"action": @"showLikesNavigationVC:",
+                        @"type": @"button"
+                    },
                     @{@"key": @"tab_bar_theming",
                       @"default": @NO},
                     @{@"key": @"restore_tab_labels",
@@ -104,18 +109,7 @@ static NSDictionary<NSString*, NSDictionary*>* BHTSettingsPages(void) {
                     @{@"key": @"hide_custom_timelines",
                       @"default": @NO},
                     @{@"key": @"remember_timeline_tab",
-                      @"default": @YES},
-                    @{
-                        @"key": @"enable_likes_tab",
-                        @"default": @NO,
-                        @"type": @"toggle"
-                    },
-                    @{
-                        @"key": @"likes_media_waterfall",
-                        @"parentKey": @"enable_likes_tab",
-                        @"default": @YES,
-                        @"type": @"toggle"
-                    }
+                      @"default": @YES}
                 ]
             },
             @"grok": @{
@@ -559,7 +553,17 @@ static NSDictionary<NSString*, NSDictionary*>* BHTSettingsIndex(void) {
 }
 
 + (NSDictionary*)settingForKey:(NSString*)key {
-    return key ? BHTSettingsIndex()[key] : nil;
+    NSDictionary* setting = key ? BHTSettingsIndex()[key] : nil;
+    if (setting) return setting;
+    // Retain defaults for the two beta.8 keys after moving their user-facing
+    // controls into the navigation editors.
+    if ([key isEqualToString:@"enable_likes_tab"]) {
+        return @{@"key": key, @"default": @NO};
+    }
+    if ([key isEqualToString:@"likes_media_waterfall"]) {
+        return @{@"key": key, @"default": @YES};
+    }
+    return nil;
 }
 
 + (BOOL)boolForKey:(NSString*)key {

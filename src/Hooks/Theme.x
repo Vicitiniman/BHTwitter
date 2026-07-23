@@ -68,7 +68,7 @@ static NSArray* orderedTabEntries(NSArray* entries) {
     NSMutableArray<NSString*>* visibleOrder =
         [(savedVisibleOrder ?: [CustomTabBarUtility defaultVisiblePageIDs])
             mutableCopy];
-    BOOL likesEnabled = [BHTSettings boolForKey:@"enable_likes_tab"];
+    BOOL likesEnabled = [CustomTabBarUtility likesTabEnabled];
     NSUInteger likesIndex = [visibleOrder indexOfObject:BHTLikesPageID()];
     if (likesEnabled) {
         // Likes is its own entry. Keep Grok exactly where the user placed it

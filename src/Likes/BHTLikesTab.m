@@ -9,9 +9,10 @@
 #import <string.h>
 
 #import "Core/BHTBundle.h"
-#import "Core/BHTSettings.h"
+#import "CustomTabBar/CustomTabBarUtility.h"
 #import "Headers/TWHeaders.h"
 #import "Hooks/HookHelpers.h"
+#import "Likes/BHTLikesNavigationUtility.h"
 
 static NSString* const kBHTLikesPage = @"likes";
 static char kBHTLikesEntryKey;
@@ -22,6 +23,8 @@ static char kBHTOriginalNativePageKey;
 static char kBHTNativeLikesNavigationMarkerKey;
 static char kBHTNativeLikesControllerKey;
 static char kBHTNativeLikesNavigationKey;
+static char kBHTNativeLikesTabViewKey;
+static char kBHTInitialResetPanMarkerKey;
 static const long long kBHTLikesPanelID = 6; // X 12.9 Bookmarks panel
 static const uintptr_t kBHTX129EntryFactoryOffset = 0x6CAFE8;
 static const uintptr_t kBHTX129EntryFactoryJumpTableOffset = 0x1329880;
@@ -78,7 +81,15 @@ static void BHTIncrementLikesDiagnostic(NSString* key) {
 
 NSDictionary* BHTLikesDiagnosticsSnapshot(void) {
     @synchronized(BHTLikesDiagnosticsLock()) {
-        return [BHTMutableLikesDiagnostics() copy];
+        NSMutableDictionary* snapshot =
+            [BHTMutableLikesDiagnostics() mutableCopy];
+        snapshot[@"tabEnabledByCustomNavigation"] =
+            @([CustomTabBarUtility likesTabEnabled]);
+        snapshot[@"configuredActivityHistoryTabs"] =
+            [BHTLikesNavigationUtility visiblePageIDsInOrder];
+        snapshot[@"waterfallEnabled"] =
+            @([BHTLikesNavigationUtility waterfallEnabled]);
+        return [snapshot copy];
     }
 }
 
@@ -838,10 +849,14 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
 @property(nonatomic, weak) BHTMediaPagerController* activeMediaPager;
 @property(nonatomic) BOOL requestedMore;
 @property(nonatomic) BOOL needsInitialTopReset;
+@property(nonatomic) BOOL hasBeenActivated;
+@property(nonatomic) NSUInteger initialResetGeneration;
 @property(nonatomic) NSUInteger loadRequestGeneration;
 - (void)ingestSections:(NSArray*)sections;
 - (void)loadMoreMedia;
 - (void)resetToNewest;
+- (void)activateForFirstPresentation;
+- (void)configureWaterfallInterface;
 @end
 
 static void BHTFindVerticalScrollView(UIView* view, UIScrollView** best,
@@ -877,26 +892,22 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
         _needsInitialTopReset = YES;
         self.title =
             [[BHTBundle sharedBundle] localizedStringForKey:@"MY_LIKES_TITLE"];
+        [[NSNotificationCenter defaultCenter]
+            addObserver:self
+               selector:@selector(likesNavigationSettingsChanged:)
+                   name:BHTLikesNavigationSettingsDidChangeNotification
+                 object:nil];
     }
     return self;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.systemBackgroundColor;
-
-    BOOL waterfallEnabled = [BHTSettings boolForKey:@"likes_media_waterfall"];
-    if (waterfallEnabled) {
-        BHTBundle* bundle = [BHTBundle sharedBundle];
-        self.selector = [[UISegmentedControl alloc]
-            initWithItems:@[
-                [bundle localizedStringForKey:@"LIKES_POSTS_SEGMENT"],
-                [bundle localizedStringForKey:@"LIKES_MEDIA_SEGMENT"]
-            ]];
-        self.selector.selectedSegmentIndex = 0;
-        [self.selector addTarget:self action:@selector(selectionChanged:) forControlEvents:UIControlEventValueChanged];
-        self.navigationItem.titleView = self.selector;
-    }
 
     if (self.postsController) {
         [self addChildViewController:self.postsController];
@@ -914,7 +925,33 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
         [self.view addSubview:unavailable];
     }
 
-    if (waterfallEnabled) {
+    [self configureWaterfallInterface];
+}
+
+- (void)likesNavigationSettingsChanged:(NSNotification*)notification {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.isViewLoaded) [self configureWaterfallInterface];
+        BHTRefreshLikesActivityHistoryConfiguration(
+            self.postsController);
+    });
+}
+
+- (void)configureWaterfallInterface {
+    BOOL waterfallEnabled =
+        [BHTLikesNavigationUtility waterfallEnabled];
+    if (waterfallEnabled && !self.collectionView) {
+        BHTBundle* bundle = [BHTBundle sharedBundle];
+        self.selector = [[UISegmentedControl alloc]
+            initWithItems:@[
+                [bundle localizedStringForKey:@"LIKES_POSTS_SEGMENT"],
+                [bundle localizedStringForKey:@"LIKES_MEDIA_SEGMENT"]
+            ]];
+        self.selector.selectedSegmentIndex = 0;
+        [self.selector addTarget:self
+                          action:@selector(selectionChanged:)
+                forControlEvents:UIControlEventValueChanged];
+        self.navigationItem.titleView = self.selector;
+
         self.waterfallLayout = [BHTWaterfallLayout new];
         self.collectionView = [[UICollectionView alloc] initWithFrame:self.view.bounds
                                                  collectionViewLayout:self.waterfallLayout];
@@ -928,11 +965,31 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
 
         UIPinchGestureRecognizer* pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(pinched:)];
         [self.collectionView addGestureRecognizer:pinch];
+        [self.collectionView.panGestureRecognizer
+            addTarget:self
+               action:@selector(cancelInitialResetFromPan:)];
+    } else if (!waterfallEnabled && self.collectionView) {
+        self.postsController.view.hidden = NO;
+        self.postsController.view.userInteractionEnabled = YES;
+        self.postsController.view.accessibilityElementsHidden = NO;
+        [self.collectionView removeFromSuperview];
+        self.collectionView = nil;
+        self.waterfallLayout = nil;
+        if (self.navigationItem.titleView == self.selector) {
+            self.navigationItem.titleView = nil;
+        }
+        self.selector = nil;
     }
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
+    if (!self.hasBeenActivated || !self.needsInitialTopReset) return;
+    [self activateForFirstPresentation];
+}
+
+- (void)activateForFirstPresentation {
+    self.hasBeenActivated = YES;
     if (!self.needsInitialTopReset) return;
     self.needsInitialTopReset = NO;
     [self resetToNewest];
@@ -945,17 +1002,45 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
     }
     BHTIncrementLikesDiagnostic(@"topResets");
 
-    // Activity History restores a private child scroll view after its own
-    // layout pass. Reset immediately and once on the next pass so a fresh tab
-    // selection consistently lands on the newest liked post.
+    // Activity History restores a private child scroll view during several
+    // delayed layout passes. Retry only during the first presentation of this
+    // app-session controller. A user pan cancels the remaining retries, so
+    // leaving and returning to Likes preserves the exact reading position.
+    NSUInteger generation = ++self.initialResetGeneration;
     __weak typeof(self) weakSelf = self;
     void (^resetOffsets)(void) = ^{
         typeof(self) strongSelf = weakSelf;
-        if (!strongSelf) return;
+        if (!strongSelf ||
+            strongSelf.initialResetGeneration != generation) {
+            return;
+        }
         [strongSelf.postsController.view layoutIfNeeded];
         UIScrollView* nativeScroll =
             BHTFindScrollableView(strongSelf.postsController.view);
+        BOOL userInteracting =
+            nativeScroll &&
+            (nativeScroll.dragging || nativeScroll.tracking ||
+             nativeScroll.decelerating ||
+             nativeScroll.panGestureRecognizer.state ==
+                 UIGestureRecognizerStateBegan ||
+             nativeScroll.panGestureRecognizer.state ==
+                 UIGestureRecognizerStateChanged);
+        if (userInteracting) {
+            strongSelf.initialResetGeneration++;
+            return;
+        }
         if (nativeScroll) {
+            if (![objc_getAssociatedObject(
+                    nativeScroll.panGestureRecognizer,
+                    &kBHTInitialResetPanMarkerKey) boolValue]) {
+                [nativeScroll.panGestureRecognizer
+                    addTarget:strongSelf
+                       action:@selector(cancelInitialResetFromPan:)];
+                objc_setAssociatedObject(
+                    nativeScroll.panGestureRecognizer,
+                    &kBHTInitialResetPanMarkerKey, @YES,
+                    OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
             CGFloat top = -nativeScroll.adjustedContentInset.top;
             [nativeScroll setContentOffset:
                 CGPointMake(nativeScroll.contentOffset.x, top) animated:NO];
@@ -967,10 +1052,19 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
                                              animated:NO];
         }
     };
-    resetOffsets();
-    dispatch_async(dispatch_get_main_queue(), resetOffsets);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
-                   dispatch_get_main_queue(), resetOffsets);
+    for (NSNumber* delay in @[@0, @100, @350, @800, @1500]) {
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW,
+                          delay.longLongValue * NSEC_PER_MSEC),
+            dispatch_get_main_queue(), resetOffsets);
+    }
+}
+
+- (void)cancelInitialResetFromPan:(UIPanGestureRecognizer*)pan {
+    if (pan.state == UIGestureRecognizerStateBegan ||
+        pan.state == UIGestureRecognizerStateChanged) {
+        self.initialResetGeneration++;
+    }
 }
 
 - (void)selectionChanged:(UISegmentedControl*)sender {
@@ -1156,6 +1250,18 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
 
 @end
 
+BOOL BHTIsManagedLikesActivityHistoryController(
+    UIViewController* controller) {
+    UIViewController* current = controller;
+    while (current) {
+        if ([current isKindOfClass:BHTLikesViewController.class]) {
+            return YES;
+        }
+        current = current.parentViewController;
+    }
+    return NO;
+}
+
 static Class BHTNativeBookmarksEntryClass(void) {
     return NSClassFromString(
         @"T1TwitterSwift.BookmarksAppNavigationTabEntry");
@@ -1267,6 +1373,8 @@ static void BHTConfigureNativeLikesEntry(id entry, BOOL injected) {
 
 static void BHTRestoreNativeEntryPage(id entry) {
     T1TabView* tabView = BHTCallObject(entry, @"tabView");
+    UIViewController* navigation =
+        objc_getAssociatedObject(tabView, &kBHTNativeLikesNavigationKey);
     NSString* original =
         objc_getAssociatedObject(tabView, &kBHTOriginalNativePageKey);
     if (original.length > 0) tabView.scribePage = original;
@@ -1274,6 +1382,11 @@ static void BHTRestoreNativeEntryPage(id entry) {
                              OBJC_ASSOCIATION_ASSIGN);
     objc_setAssociatedObject(tabView, &kBHTNativeLikesNavigationKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (navigation) {
+        objc_setAssociatedObject(navigation,
+                                 &kBHTNativeLikesTabViewKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     objc_setAssociatedObject(entry, &kBHTNativeLikesEntryMarkerKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -1305,6 +1418,9 @@ void BHTConnectNativeLikesNavigationController(
     BHTMarkNativeLikesNavigationController(controller);
     objc_setAssociatedObject(tabView, &kBHTNativeLikesNavigationKey,
                              controller,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(controller, &kBHTNativeLikesTabViewKey,
+                             tabView,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
@@ -1341,7 +1457,7 @@ BHTLikesControllerForNativeNavigation(UIViewController* navigation,
 
 void BHTInstallNativeLikesNavigationController(
     UIViewController* navigation, BOOL resetToNewest) {
-    if (![BHTSettings boolForKey:@"enable_likes_tab"] ||
+    if (![CustomTabBarUtility likesTabEnabled] ||
         !BHTIsNativeLikesNavigationController(navigation)) {
         return;
     }
@@ -1370,10 +1486,16 @@ void BHTInstallNativeLikesNavigationController(
     }
 
     if (resetToNewest) [likes resetToNewest];
+    T1TabView* tabView =
+        objc_getAssociatedObject(navigation,
+                                 &kBHTNativeLikesTabViewKey);
+    if (tabView.isSelected) {
+        [likes activateForFirstPresentation];
+    }
 }
 
 static void BHTActivateLikesTabViewNow(T1TabView* view) {
-    if (![BHTSettings boolForKey:@"enable_likes_tab"] || !view.isSelected ||
+    if (![CustomTabBarUtility likesTabEnabled] || !view.isSelected ||
         ![view.scribePage isEqualToString:kBHTLikesPage]) {
         return;
     }
@@ -1381,7 +1503,13 @@ static void BHTActivateLikesTabViewNow(T1TabView* view) {
         objc_getAssociatedObject(view, &kBHTNativeLikesNavigationKey);
     if (!navigation) return;
     BHTIncrementLikesDiagnostic(@"tabActivations");
-    BHTInstallNativeLikesNavigationController(navigation, YES);
+    // Re-selecting the bottom destination must not jump the retained Likes
+    // controller back to the top. Its one-time first-presentation reset is
+    // owned by BHTLikesViewController.
+    BHTInstallNativeLikesNavigationController(navigation, NO);
+    BHTLikesViewController* likes =
+        BHTLikesControllerForNativeNavigation(navigation, NO);
+    [likes activateForFirstPresentation];
 }
 
 void BHTActivateLikesTabView(UIView* view) {
@@ -1395,7 +1523,7 @@ void BHTActivateLikesTabView(UIView* view) {
 }
 
 NSArray* BHTEntriesByInstallingLikesDestination(NSArray* entries) {
-    BOOL enabled = [BHTSettings boolForKey:@"enable_likes_tab"];
+    BOOL enabled = [CustomTabBarUtility likesTabEnabled];
     NSMutableArray* result = [entries mutableCopy] ?: [NSMutableArray array];
     id likesEntry = nil;
     id anchor = nil;
