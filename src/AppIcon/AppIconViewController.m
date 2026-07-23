@@ -197,14 +197,21 @@ static NSString* const kPrimaryIconSentinel = @"PrimaryIcon";
     AppIconItem* item = self.icons[ip.row];
     NSString* toSet = item.isPrimaryIcon ? nil : item.bundleIconName;
 
-    [[NSUserDefaults standardUserDefaults]
-        setObject:(toSet ?: kPrimaryIconSentinel)
-           forKey:kLastSelectedIconKey];
-    [cv reloadData];
-
     // A block is always passed: nil name + nil handler crashes UIKit.
     [[UIApplication sharedApplication] setAlternateIconName:toSet
-                                          completionHandler:^(NSError* _Nullable error){}];
+                                          completionHandler:
+        ^(NSError* _Nullable error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error) {
+                NSLog(@"[NeoFreeBird] App icon change failed: %@", error);
+            } else {
+                [[NSUserDefaults standardUserDefaults]
+                    setObject:(toSet ?: kPrimaryIconSentinel)
+                       forKey:kLastSelectedIconKey];
+            }
+            [cv reloadData];
+        });
+    }];
 }
 
 #pragma mark - Section header

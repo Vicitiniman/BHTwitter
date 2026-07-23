@@ -8,8 +8,10 @@ on:
       - "src/**"
       - "deps/**"
       - "layout/**"
+      - "branding/**"
       - "Makefile"
       - "build.sh"
+      - "rebrand.sh"
       - "control"
       - "BHTwitter.plist"
       - ".github/workflows/build.yml"
@@ -84,6 +86,12 @@ jobs:
       - name: Add GNU Make to PATH
         run: |
           echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Test Twitter Branding
+        run: |
+          bash -n main/build.sh main/rebrand.sh
+          python3 -m py_compile main/branding/ipa_branding.py
+          python3 main/branding/smoke_test.py
 
       - name: Download Theos
         uses: actions/checkout@v4

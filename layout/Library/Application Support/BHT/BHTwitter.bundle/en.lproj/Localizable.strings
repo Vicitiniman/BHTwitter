@@ -299,6 +299,39 @@
 /*Media downloads*/
 "DOWNLOAD_VIDEO_NUMBER_TITLE" = "Video %lu";
 "UNKNOWN_ERROR" = "An unknown error occurred.";
+"MEDIA_ACTION_MENU_EDITOR_TITLE" = "Customize media menus";
+"MEDIA_ACTION_MENU_SETTINGS_TITLE" = "Media menus";
+"MEDIA_ACTION_MENU_SETTINGS_DETAIL" = "Choose a media type to arrange its action menu.";
+"MEDIA_ACTION_PHOTOS_TITLE" = "Photos";
+"MEDIA_ACTION_PHOTOS_DETAIL" = "Choose and arrange the actions shown for photos.";
+"MEDIA_ACTION_VIDEOS_TITLE" = "Videos";
+"MEDIA_ACTION_VIDEOS_DETAIL" = "Choose and arrange the actions shown for videos.";
+"MEDIA_ACTION_GIFS_TITLE" = "GIFs";
+"MEDIA_ACTION_GIFS_DETAIL" = "Choose and arrange the actions shown for GIFs.";
+"MEDIA_ACTION_PHOTO_EDITOR_TITLE" = "Photo actions";
+"MEDIA_ACTION_VIDEO_EDITOR_TITLE" = "Video actions";
+"MEDIA_ACTION_GIF_EDITOR_TITLE" = "GIF actions";
+"MEDIA_ACTION_GRID_DETAIL" = "Tap an action to show or hide it. Drag the tiles or the bar below to reorder the menu. Actions unavailable for a post are skipped automatically.";
+"MEDIA_ACTION_EMPTY_PREVIEW_TITLE" = "No actions selected";
+"MEDIA_ACTION_RESET_MESSAGE" = "Restore all actions in their default order?";
+"MEDIA_ACTION_LIKE_TITLE" = "Like";
+"MEDIA_ACTION_COPY_LINK_TITLE" = "Copy link";
+"MEDIA_ACTION_REACT_TITLE" = "React with media";
+"MEDIA_ACTION_OFFLINE_TITLE" = "Add to Offline";
+"MEDIA_ACTION_DOWNLOAD_TITLE" = "Download";
+"MEDIA_ACTION_SHARE_FILE_TITLE" = "Share media file";
+"MEDIA_ACTION_SHARE_VIA_TITLE" = "Share via";
+"MEDIA_ACTION_DOWNLOAD_PHOTO_MENU_TITLE" = "Download Photo";
+"MEDIA_ACTION_DOWNLOAD_VIDEO_MENU_TITLE" = "Download Video";
+"MEDIA_ACTION_DOWNLOAD_GIF_MENU_TITLE" = "Download GIF";
+"MEDIA_ACTION_SHARE_PHOTO_FILE_MENU_TITLE" = "Share Photo File";
+"MEDIA_ACTION_SHARE_VIDEO_FILE_MENU_TITLE" = "Share Video File";
+"MEDIA_ACTION_SHARE_GIF_FILE_MENU_TITLE" = "Share GIF File";
+"MEDIA_ACTION_CHOOSE_SHARE_TITLE" = "Choose media to share";
+"MEDIA_ACTION_SHARE_VIDEO_NUMBER_TITLE" = "Video %lu";
+"MEDIA_ACTION_SHARE_GIF_NUMBER_TITLE" = "GIF %lu";
+"MEDIA_ACTION_CHOOSE_PHOTO_TITLE" = "Choose a photo";
+"MEDIA_ACTION_PHOTO_NUMBER_TITLE" = "Photo %lu";
 
 /*Custom fonts*/
 "INSTALL_IFONT_BUTTON_TITLE" = "iFont application";

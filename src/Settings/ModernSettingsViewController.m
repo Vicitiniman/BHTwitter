@@ -13,6 +13,7 @@
 #import "Settings/ModernSettingsPlaceholderViewController.h"
 #import "Settings/Pages/AppearanceSettingsViewController.h"
 #import "Settings/Pages/DebugSettingsViewController.h"
+#import "Settings/Pages/MediaDownloadsSettingsViewController.h"
 #import "Settings/Pages/ProfilesSettingsViewController.h"
 #import "Settings/Pages/TimelinesSettingsViewController.h"
 #import "Settings/Pages/TweetsSettingsViewController.h"
@@ -642,9 +643,9 @@
 }
 
 - (void)showDownloadsSettings {
-    ModernSettingsPageViewController* vc =
-        [[ModernSettingsPageViewController alloc] initWithAccount:self.account
-                                                          pageKey:@"media_downloads"];
+    MediaDownloadsSettingsViewController* vc =
+        [[MediaDownloadsSettingsViewController alloc]
+            initWithAccount:self.account];
     [self.navigationController pushViewController:vc animated:YES];
 }
 

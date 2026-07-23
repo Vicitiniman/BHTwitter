@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # NeoFreeBird rebrander: applies name/icon branding to an already built IPA.
-# Usage: rebrand.sh [-t | --twitter-branding] [--resource-pack ZIP] [-o OUTPUT] IPA
+# Usage: rebrand.sh [-t | --twitter-branding] [--twitter-icon PNG] [--resource-pack ZIP] [-o OUTPUT] IPA
 
 is_tty=0
 if [[ -t 1 ]]; then is_tty=1; fi
@@ -23,11 +23,12 @@ die() { err "$1"; exit 1; }
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [-t | --twitter-branding] [--resource-pack ZIP] [-o OUTPUT] IPA
+Usage: $(basename "$0") [-t | --twitter-branding] [--twitter-icon PNG] [--resource-pack ZIP] [-o OUTPUT] IPA
 TL;DR: You need to select at least one branding option and a built .ipa/.tipa.
 
 Branding (at least one required):
-  -t, --twitter-branding  Set's the app's display name to Twitter
+  -t, --twitter-branding  Set the app's display name to Twitter
+  --twitter-icon PNG      Add a selectable alternate app icon from a square PNG
   --resource-pack ZIP     (macOS only) Apply a theme pack ZIP
 
 Options:
@@ -43,6 +44,7 @@ require_cmd python3
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 TWITTER_BRANDING=0
+TWITTER_APP_ICON=""
 RESOURCE_PACK=""
 OUTPUT=""
 IPA=""
@@ -56,6 +58,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -t|--twitter-branding)
       TWITTER_BRANDING=1; shift
+      ;;
+    --twitter-icon)
+      [[ $# -ge 2 ]] || die "--twitter-icon requires a path argument."
+      TWITTER_APP_ICON="$2"; shift 2
+      ;;
+    --twitter-icon=*)
+      TWITTER_APP_ICON="${1#*=}"; shift
       ;;
     --resource-pack)
       [[ $# -ge 2 ]] || die "--resource-pack requires a path argument."
@@ -87,7 +96,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$IPA" || ( "$TWITTER_BRANDING" -eq 0 && -z "$RESOURCE_PACK" ) ]]; then
+if [[ -z "$IPA" || ( "$TWITTER_BRANDING" -eq 0 && -z "$TWITTER_APP_ICON" && -z "$RESOURCE_PACK" ) ]]; then
   usage
   exit 2
 fi
@@ -99,6 +108,9 @@ fi
 if [[ -n "$RESOURCE_PACK" && ! -f "$RESOURCE_PACK" ]]; then
   die "--resource-pack file not found: $RESOURCE_PACK"
 fi
+if [[ -n "$TWITTER_APP_ICON" && ! -f "$TWITTER_APP_ICON" ]]; then
+  die "--twitter-icon file not found: $TWITTER_APP_ICON"
+fi
 
 if [[ -n "$OUTPUT" ]]; then
   cp -f "$IPA" "$OUTPUT"
@@ -106,6 +118,7 @@ if [[ -n "$OUTPUT" ]]; then
 fi
 
 say "Rebranding $(basename "$IPA")."
-TWITTER_BRANDING="$TWITTER_BRANDING" RESOURCE_PACK="$RESOURCE_PACK" \
+TWITTER_BRANDING="$TWITTER_BRANDING" TWITTER_APP_ICON="$TWITTER_APP_ICON" \
+  RESOURCE_PACK="$RESOURCE_PACK" \
   python3 "$SCRIPT_DIR/branding/ipa_branding.py" "$IPA"
 say "$(basename "$IPA") has been successfully rebranded. Enjoy!"

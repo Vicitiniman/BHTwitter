@@ -4,13 +4,14 @@
 This is a standalone port of the former ipa-branding.sh. rebrand.sh invokes it
 as a subprocess on an already built IPA/TIPA:
 
-    RESOURCE_PACK=... TWITTER_BRANDING=1 python3 ipa_branding.py <ipa_path>
+    RESOURCE_PACK=... TWITTER_BRANDING=1 TWITTER_APP_ICON=... \
+        python3 ipa_branding.py <ipa_path>
 
 It unpacks the IPA once, applies every enabled step — the theme pack in
-RESOURCE_PACK and, when TWITTER_BRANDING=1, the "Twitter" display name — then
-repackages once. When no branding is enabled it exits 0 without touching the
-IPA. A non-zero exit means a requested step failed; rebrand.sh treats that as
-fatal.
+RESOURCE_PACK, the loose alternate icon in TWITTER_APP_ICON and, when
+TWITTER_BRANDING=1, the "Twitter" display name — then repackages once. When no
+branding is enabled it exits 0 without touching the IPA. A non-zero exit means
+a requested step failed; rebrand.sh treats that as fatal.
 
 The sibling helpers (car_extract.m, the .py steps) live alongside this file in
 branding/, so they are resolved relative to this file rather than the caller.
@@ -18,6 +19,7 @@ branding/, so they are resolved relative to this file rather than the caller.
 
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -58,7 +60,50 @@ def _is_apple_double(path):
     return path.name.startswith("._")
 
 
-# --- display name -----------------------------------------------------------
+# --- display name and built-in alternate icon -------------------------------
+
+def _write_binary_plist(path, data):
+    with open(path, "wb") as f:
+        plistlib.dump(data, f, fmt=plistlib.FMT_BINARY)
+
+
+def _set_localized_display_name(path):
+    """Update a localized InfoPlist.strings without assuming its encoding."""
+    try:
+        with open(path, "rb") as f:
+            data = plistlib.load(f)
+        if isinstance(data, dict):
+            data["CFBundleDisplayName"] = "Twitter"
+            _write_binary_plist(path, data)
+            return
+    except (OSError, plistlib.InvalidFileException):
+        pass
+
+    raw = path.read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        candidates = (("utf-16", "utf-16"),)
+    elif raw.startswith(b"\xef\xbb\xbf"):
+        candidates = (("utf-8-sig", "utf-8-sig"),)
+    else:
+        candidates = (("utf-8", "utf-8"),)
+    for read_encoding, write_encoding in candidates:
+        try:
+            text = raw.decode(read_encoding)
+        except UnicodeDecodeError:
+            continue
+
+        replacement = '"CFBundleDisplayName" = "Twitter";'
+        pattern = re.compile(
+            r'(?m)^\s*"?CFBundleDisplayName"?\s*=\s*"(?:[^"\\]|\\.)*"\s*;'
+        )
+        if pattern.search(text):
+            text = pattern.sub(replacement, text)
+        else:
+            text = text.rstrip() + "\n" + replacement + "\n"
+        path.write_text(text, encoding=write_encoding)
+        return
+
+    raise BrandingError(f"Branding: could not update localized name in {path}")
 
 def _set_display_name_in_app(appdir):
     """Force the on-device app name back to "Twitter"."""
@@ -66,13 +111,113 @@ def _set_display_name_in_app(appdir):
     if not plist.is_file():
         raise BrandingError("Branding: could not locate app Info.plist")
 
-    # plistlib reads/writes both binary and XML plists, so no macOS-only plist
-    # tools are needed. IPA Info.plists are binary, so we write binary back.
     with open(plist, "rb") as f:
         data = plistlib.load(f)
     data["CFBundleDisplayName"] = "Twitter"
-    with open(plist, "wb") as f:
-        plistlib.dump(data, f, fmt=plistlib.FMT_BINARY)
+    _write_binary_plist(plist, data)
+
+    # A localized InfoPlist.strings overrides Info.plist on SpringBoard. Update
+    # every shipped localization so the home-screen label cannot fall back to X.
+    for localized in appdir.glob("*.lproj/InfoPlist.strings"):
+        _set_localized_display_name(localized)
+
+
+def _resize_icon(source, size, destination):
+    """Resize a square icon with a tool available on macOS or common dev hosts."""
+    sips = shutil.which("sips")
+    if sips and _run(
+        [sips, "-z", str(size), str(size), str(source), "--out", str(destination)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ):
+        return
+
+    magick = shutil.which("magick")
+    if magick and _run(
+        [magick, str(source), "-resize", f"{size}x{size}!", str(destination)]
+    ):
+        return
+
+    convert = shutil.which("convert")
+    if convert and _run(
+        [convert, str(source), "-resize", f"{size}x{size}!", str(destination)]
+    ):
+        return
+
+    raise BrandingError(
+        "Branding: 'sips' (macOS) or ImageMagick is required to add the Twitter icon"
+    )
+
+
+def _install_alternate_icon_in_app(appdir, icon_path):
+    """Add the supplied bird art as a normal loose alternate app icon.
+
+    Loose icon files deliberately avoid rebuilding Assets.car. That preserves
+    all stock alternate icons and is supported by UIApplication's public
+    setAlternateIconName API.
+    """
+    icon_path = Path(icon_path).resolve()
+    if not icon_path.is_file():
+        raise BrandingError(f"Branding: Twitter app icon not found: {icon_path}")
+
+    plist = appdir / "Info.plist"
+    if not plist.is_file():
+        raise BrandingError("Branding: could not locate app Info.plist")
+
+    # Generate every scale needed by iPhone and iPad. App icons cannot be loaded
+    # from the tweak bundle: SpringBoard expects these files beside Info.plist.
+    renditions = {
+        "BHTTwitterAppIcon20x20": {1: 20, 2: 40, 3: 60},
+        "BHTTwitterAppIcon29x29": {1: 29, 2: 58, 3: 87},
+        "BHTTwitterAppIcon40x40": {1: 40, 2: 80, 3: 120},
+        "BHTTwitterAppIcon60x60": {2: 120, 3: 180},
+        "BHTTwitterAppIcon76x76": {1: 76, 2: 152},
+        "BHTTwitterAppIcon83_5x83_5": {2: 167},
+    }
+    for base, scales in renditions.items():
+        for scale, pixels in scales.items():
+            suffix = "" if scale == 1 else f"@{scale}x"
+            _resize_icon(icon_path, pixels, appdir / f"{base}{suffix}.png")
+
+    with open(plist, "rb") as f:
+        info = plistlib.load(f)
+
+    def add_alternate(plist_key, files):
+        icons = info.get(plist_key)
+        if not isinstance(icons, dict):
+            icons = {}
+        alternates = icons.get("CFBundleAlternateIcons")
+        if not isinstance(alternates, dict):
+            alternates = {}
+        # Omit CFBundleIconName: that key is for an Assets.car app-icon set.
+        # CFBundleIconFiles is the correct declaration for these loose PNGs.
+        alternates["BHTTwitterBird"] = {
+            "CFBundleIconFiles": files,
+            "UIPrerenderedIcon": False,
+        }
+        icons["CFBundleAlternateIcons"] = alternates
+        info[plist_key] = icons
+
+    add_alternate(
+        "CFBundleIcons",
+        [
+            "BHTTwitterAppIcon20x20",
+            "BHTTwitterAppIcon29x29",
+            "BHTTwitterAppIcon40x40",
+            "BHTTwitterAppIcon60x60",
+        ],
+    )
+    add_alternate(
+        "CFBundleIcons~ipad",
+        [
+            "BHTTwitterAppIcon20x20",
+            "BHTTwitterAppIcon29x29",
+            "BHTTwitterAppIcon40x40",
+            "BHTTwitterAppIcon76x76",
+            "BHTTwitterAppIcon83_5x83_5",
+        ],
+    )
+    _write_binary_plist(plist, info)
 
 
 # --- resource pack ----------------------------------------------------------
@@ -246,7 +391,8 @@ def apply_ipa_branding(ipa):
     """Unpack the IPA once, apply every enabled step, repackage once."""
     resource_pack = os.environ.get("RESOURCE_PACK", "")
     twitter_branding = os.environ.get("TWITTER_BRANDING", "0") == "1"
-    if not resource_pack and not twitter_branding:
+    twitter_app_icon = os.environ.get("TWITTER_APP_ICON", "")
+    if not resource_pack and not twitter_branding and not twitter_app_icon:
         return
 
     ipa = Path(ipa)
@@ -271,16 +417,20 @@ def apply_ipa_branding(ipa):
 
         if resource_pack:
             _apply_resource_pack_to_app(appdir, workdir, resource_pack)
+        if twitter_app_icon:
+            _install_alternate_icon_in_app(appdir, twitter_app_icon)
         if twitter_branding:
             _set_display_name_in_app(appdir)
 
-        # Repackage once. Use the zip binary (not zipfile) to preserve symlinks
-        # and permissions exactly as the original build produced them.
+        # Repackage the complete extracted root once. `-y` stores symlinks as
+        # links instead of following them, while `.` keeps every top-level IPA
+        # entry (for example iTunesArtwork) rather than dropping non-Payload
+        # metadata.
         ipa = ipa.resolve()
         tmp_ipa = ipa.with_name(ipa.name + ".branding.tmp")
         if tmp_ipa.exists():
             tmp_ipa.unlink()
-        if not _run(["zip", "-qr", str(tmp_ipa), "Payload"], cwd=str(ipa_root)):
+        if not _run(["zip", "-qry", str(tmp_ipa), "."], cwd=str(ipa_root)):
             if tmp_ipa.exists():
                 tmp_ipa.unlink()
             raise BrandingError(f"Branding: failed to repackage {ipa}")
