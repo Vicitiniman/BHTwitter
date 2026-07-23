@@ -103,9 +103,8 @@ static void BHTApplyLikesHeartToNativeBar(T1TabBarViewController* controller) {
         if (navigationClass &&
             [controller isKindOfClass:navigationClass]) {
             T1TabView* tabView =
-                [self respondsToSelector:@selector(tabView)]
-                    ? [self tabView]
-                    : nil;
+                ((id (*)(id, SEL))objc_msgSend)(self,
+                                                @selector(tabView));
             BHTConnectNativeLikesNavigationController(controller, tabView);
         } else {
             BHTConnectNativeLikesNavigationTree(controller, self);
