@@ -4,6 +4,7 @@
 //
 
 #import "HookHelpers.h"
+#import "Compatibility/BHTCompatibilityReporter.h"
 #import "MediaActions/BHTMediaActionUtility.h"
 
 static char kBHTVideoDownloadMediaKey;
@@ -12,12 +13,24 @@ static char kBHTInlineDownloadLongPressKey;
 static char kBHTInlineDownloadHandlerKey;
 static char kBHTCarouselDownloadLongPressKey;
 static char kBHTCarouselDownloadHandlerKey;
+static char kBHTMediaActionDownloaderKey;
+static char kBHTMediaActionKindKey;
+static char kBHTMediaActionKindTokenKey;
+static char kBHTMediaActionInjectedKey;
+static NSString* const kBHTPendingMediaActionKindThreadKey =
+    @"BHTPendingMediaActionKind";
 
 static id BHTObjectForSelector(id object, SEL selector) {
     if (!object || ![object respondsToSelector:selector]) {
         return nil;
     }
     return ((id (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
+static BOOL BHTNativeMediaActionBuilderAvailable(void) {
+    SEL selector = NSSelectorFromString(
+        @"t1_mediaActivityViewActionItemsForStatus:account:image:mediaInfo:shortTitles:sourceView:");
+    return class_getInstanceMethod(UIViewController.class, selector) != NULL;
 }
 
 // Do not key video detection off mediaType alone. X 12.9 has multiple media
@@ -73,6 +86,29 @@ static NSArray<TFSTwitterEntityMedia*>* BHTVideoEntitiesFromMediaInfos(
     return [entities copy];
 }
 
+static TFSTwitterEntityMedia* BHTVideoEntityAtPressLocation(
+    UIView* mediaView,
+    UILongPressGestureRecognizer* recognizer) {
+    SEL indexSelector = @selector(mediaIndexAtPoint:);
+    SEL infoSelector = @selector(mediaInfoAtIndex:);
+    if (![mediaView respondsToSelector:indexSelector] ||
+        ![mediaView respondsToSelector:infoSelector]) {
+        return nil;
+    }
+
+    CGPoint point = [recognizer locationInView:mediaView];
+    NSInteger index =
+        ((NSInteger (*)(id, SEL, CGPoint))objc_msgSend)(
+            mediaView, indexSelector, point);
+    if (index < 0) return nil;
+
+    id mediaInfo =
+        ((id (*)(id, SEL, NSInteger))objc_msgSend)(
+            mediaView, infoSelector, index);
+    id media = BHTObjectForSelector(mediaInfo, @selector(mediaEntity));
+    return BHTIsDownloadableVideoEntity(media) ? media : nil;
+}
+
 static TFSTwitterEntityMedia* BHTMediaEntityFromInlineView(id inlineView) {
     id viewModel = BHTObjectForSelector(inlineView, @selector(viewModel));
 
@@ -124,6 +160,11 @@ static NSArray* BHTMediaEntitiesFromStatus(id status) {
                                                : @[status ?: NSNull.null];
     for (id source in sources) {
         if (source == NSNull.null) continue;
+        id wrappedMedia =
+            BHTObjectForSelector(source, @selector(mediaEntity));
+        if (wrappedMedia) {
+            appendMedia(@[wrappedMedia]);
+        }
         appendMedia(BHTObjectForSelector(
             source, @selector(representedMediaEntities)));
         for (NSString* selectorName in
@@ -245,7 +286,8 @@ static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
     NSArray* entities =
         BHTVideoEntitiesFromMediaInfos(self.inlineMediaInfos);
     BOOL enabled = [BHTSettings boolForKey:@"download_videos"] &&
-                   entities.count > 0;
+                   entities.count > 0 &&
+                   !BHTNativeMediaActionBuilderAvailable();
     if (enabled && !self.bhtDownloadLongPress) {
         UILongPressGestureRecognizer* recognizer =
             [[UILongPressGestureRecognizer alloc]
@@ -269,14 +311,14 @@ static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
         ![BHTSettings boolForKey:@"download_videos"]) {
         return;
     }
-    NSArray* entities =
-        BHTVideoEntitiesFromMediaInfos(self.inlineMediaInfos);
-    if (entities.count == 0) return;
+    TFSTwitterEntityMedia* media =
+        BHTVideoEntityAtPressLocation(self, recognizer);
+    if (!media) return;
     if (!self.bhtDownloadHandler) {
         self.bhtDownloadHandler = [%c(DownloadInlineButton) new];
     }
     [self.bhtDownloadHandler
-        presentDownloadOptionsForMediaEntities:entities];
+        presentDownloadOptionsForMediaEntities:@[media]];
 }
 %end
 
@@ -289,7 +331,8 @@ static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
     NSArray* entities =
         BHTVideoEntitiesFromMediaInfos(self.inlineMediaInfos);
     BOOL enabled = [BHTSettings boolForKey:@"download_videos"] &&
-                   entities.count > 0;
+                   entities.count > 0 &&
+                   !BHTNativeMediaActionBuilderAvailable();
     UILongPressGestureRecognizer* recognizer =
         objc_getAssociatedObject(self, &kBHTCarouselDownloadLongPressKey);
     if (enabled && !recognizer) {
@@ -316,9 +359,9 @@ static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
         return;
     }
 
-    NSArray* entities =
-        BHTVideoEntitiesFromMediaInfos(self.inlineMediaInfos);
-    if (entities.count == 0) return;
+    TFSTwitterEntityMedia* media =
+        BHTVideoEntityAtPressLocation(self, recognizer);
+    if (!media) return;
 
     DownloadInlineButton* handler =
         objc_getAssociatedObject(self, &kBHTCarouselDownloadHandlerKey);
@@ -328,7 +371,7 @@ static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
             self, &kBHTCarouselDownloadHandlerKey, handler,
             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    [handler presentDownloadOptionsForMediaEntities:entities];
+    [handler presentDownloadOptionsForMediaEntities:@[media]];
 }
 %end
 
@@ -341,7 +384,8 @@ static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
 
     TFSTwitterEntityMedia* media = BHTMediaEntityFromInlineView(self);
     BOOL enabled =
-        [BHTSettings boolForKey:@"download_videos"] && media != nil;
+        [BHTSettings boolForKey:@"download_videos"] && media != nil &&
+        !BHTNativeMediaActionBuilderAvailable();
     UILongPressGestureRecognizer* recognizer =
         objc_getAssociatedObject(self, &kBHTInlineDownloadLongPressKey);
     if (enabled && !recognizer) {
@@ -436,7 +480,9 @@ static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
                 self, &kBHTVideoDownloadHandlerKey, handler,
                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
-        [handler presentDownloadOptionsForMediaEntities:@[media]];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [handler presentDownloadOptionsForMediaEntities:@[media]];
+        });
         return;
     }
     %orig;
@@ -654,50 +700,135 @@ static NSArray* DMVideoEntities(UIView* attachmentView) {
 }
 %end
 
-// MARK: - Tweet video download
+// MARK: - Native timeline media menus
 
-// X 12.9 builds the media menu containing com.twitter.activity.DownloadVideo,
-// TweetVideo, ReactWithVideo, AddVideoToOffline, and Share Via in this
-// UIViewController(TFNTwitterStatus) category method. Hook the base class so
-// photo, video, and GIF sheets all get the same configurable action pipeline.
-%hook UIViewController
-- (NSArray*)_t1_actionItemsForStatus:(__unsafe_unretained id)status
-                             account:(__unsafe_unretained id)account
-                     shareableEntity:(__unsafe_unretained id)shareableEntity
-                           entityURL:(__unsafe_unretained id)entityURL
-                              source:(__unsafe_unretained id)source
-                             options:(NSUInteger)options
-                     scribeComponent:(__unsafe_unretained id)scribeComponent
-                           doneBlock:(__unsafe_unretained id)doneBlock {
-    NSArray* origItems = %orig;
-    NSArray* allMediaEntities =
-        BHTActionTargetMediaEntities(shareableEntity, status);
+static BHTMediaActionKind BHTMediaActionKindForEntities(
+    NSArray* allMediaEntities) {
+    NSArray* videoEntities =
+        BHTVideoEntitiesFromMediaEntities(allMediaEntities);
+    if (videoEntities.count == 0) {
+        return BHTMediaActionKindPhoto;
+    }
+    return BHTMediaEntityLooksLikeGIF(videoEntities.firstObject)
+               ? BHTMediaActionKindGIF
+               : BHTMediaActionKindVideo;
+}
+
+static NSString* BHTMediaActionKindName(BHTMediaActionKind kind) {
+    switch (kind) {
+        case BHTMediaActionKindPhoto:
+            return @"photo";
+        case BHTMediaActionKindGIF:
+            return @"gif";
+        case BHTMediaActionKindVideo:
+        default:
+            return @"video";
+    }
+}
+
+static void BHTSetPendingMediaActionKind(BHTMediaActionKind kind) {
+    NSNumber* pendingKind = @(kind);
+    NSMutableDictionary* threadDictionary =
+        NSThread.currentThread.threadDictionary;
+    threadDictionary[kBHTPendingMediaActionKindThreadKey] =
+        pendingKind;
+    // The preview factory is called synchronously by X. Expire this fallback
+    // on the next run-loop turn so an aborted menu build cannot affect a later
+    // unrelated preview.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if ([threadDictionary[kBHTPendingMediaActionKindThreadKey]
+                isEqual:pendingKind]) {
+            [threadDictionary
+                removeObjectForKey:
+                    kBHTPendingMediaActionKindThreadKey];
+        }
+    });
+}
+
+static void BHTSetSourceMediaActionKind(
+    UIView* sourceView,
+    BHTMediaActionKind kind) {
+    if (!sourceView) return;
+
+    NSObject* token = [NSObject new];
+    objc_setAssociatedObject(
+        sourceView, &kBHTMediaActionKindKey, @(kind),
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(
+        sourceView, &kBHTMediaActionKindTokenKey, token,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    // Only the synchronous preview factory should consume this fallback.
+    // Expire it on the next run-loop turn so a source view reused by another
+    // preview cannot inherit a stale media kind.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (objc_getAssociatedObject(
+                sourceView, &kBHTMediaActionKindTokenKey) == token) {
+            objc_setAssociatedObject(
+                sourceView, &kBHTMediaActionKindKey, nil,
+                OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(
+                sourceView, &kBHTMediaActionKindTokenKey, nil,
+                OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    });
+}
+
+static NSArray* BHTConfiguredNativeMediaActionItems(
+    id owner,
+    NSArray* origItems,
+    NSArray* allMediaEntities) {
     if (allMediaEntities.count == 0) {
-        return origItems;
+        return origItems ?: @[];
     }
 
     NSArray* mediaEntities =
         BHTVideoEntitiesFromMediaEntities(allMediaEntities);
-    BOOL isGIF = mediaEntities.count > 0 &&
-                 BHTMediaEntityLooksLikeGIF(mediaEntities.firstObject);
-    BHTMediaActionKind mediaKind = mediaEntities.count == 0
-                                       ? BHTMediaActionKindPhoto
-                                       : (isGIF ? BHTMediaActionKindGIF
-                                                : BHTMediaActionKindVideo);
+    BHTMediaActionKind mediaKind =
+        BHTMediaActionKindForEntities(allMediaEntities);
+    BOOL isPhoto = mediaKind == BHTMediaActionKindPhoto;
+    BOOL isGIF = mediaKind == BHTMediaActionKindGIF;
     NSMutableArray* newItems =
         origItems ? [origItems mutableCopy] : [NSMutableArray array];
 
-    BOOL isPhoto = mediaEntities.count == 0;
-    if (!isPhoto &&
-        ![BHTSettings boolForKey:@"download_videos"]) {
-        return BHTMediaActionApplyPreferences(newItems, mediaKind);
+    BOOL alreadyInjected = NO;
+    for (id item in newItems) {
+        if ([objc_getAssociatedObject(
+                 item, &kBHTMediaActionInjectedKey) boolValue]) {
+            alreadyInjected = YES;
+            break;
+        }
+    }
+    if (alreadyInjected) {
+        NSArray* configured =
+            BHTMediaActionApplyPreferences(newItems, mediaKind);
+        for (id item in configured) {
+            objc_setAssociatedObject(
+                item, &kBHTMediaActionKindKey, @(mediaKind),
+                OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return configured;
     }
 
-    static char downloaderKey;
-    DownloadInlineButton* downloader = objc_getAssociatedObject(self, &downloaderKey);
+    if (!isPhoto &&
+        ![BHTSettings boolForKey:@"download_videos"]) {
+        NSArray* configured =
+            BHTMediaActionApplyPreferences(newItems, mediaKind);
+        for (id item in configured) {
+            objc_setAssociatedObject(
+                item, &kBHTMediaActionKindKey, @(mediaKind),
+                OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return configured;
+    }
+
+    DownloadInlineButton* downloader =
+        objc_getAssociatedObject(owner, &kBHTMediaActionDownloaderKey);
     if (!downloader) {
         downloader = [%c(DownloadInlineButton) new];
-        objc_setAssociatedObject(self, &downloaderKey, downloader, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(
+            owner, &kBHTMediaActionDownloaderKey, downloader,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
     TFNActionItem* downloadItem = [%c(TFNActionItem)
@@ -710,18 +841,25 @@ static NSArray* DMVideoEntities(UIView* attachmentView) {
                                    : @"MEDIA_ACTION_DOWNLOAD_VIDEO_MENU_TITLE")]
                   imageName:@"arrow_down_circle_stroke"
                      action:^{
-                         if (isPhoto) {
-                             [downloader
-                                 downloadOriginalPhotoMediaEntities:
-                                     allMediaEntities];
-                         } else {
-                             [downloader
-                                 presentDownloadOptionsForMediaEntities:
-                                     mediaEntities];
-                         }
+                         // Let X close its preview menu before presenting the
+                         // quality picker, Photos permission prompt, or HUD.
+                         dispatch_async(dispatch_get_main_queue(), ^{
+                             if (isPhoto) {
+                                 [downloader
+                                     downloadOriginalPhotoMediaEntities:
+                                         allMediaEntities];
+                             } else {
+                                 [downloader
+                                     presentDownloadOptionsForMediaEntities:
+                                         mediaEntities];
+                             }
+                         });
                      }];
     BHTMediaActionSetIdentifier(
         downloadItem, BHTMediaActionDownloadIdentifier);
+    objc_setAssociatedObject(
+        downloadItem, &kBHTMediaActionInjectedKey, @YES,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     TFNActionItem* shareFileItem = [%c(TFNActionItem)
         actionItemWithTitle:
@@ -734,22 +872,198 @@ static NSArray* DMVideoEntities(UIView* attachmentView) {
                                : @"MEDIA_ACTION_SHARE_VIDEO_FILE_MENU_TITLE")]
                   imageName:@"share_stroke_bold"
                      action:^{
-                         if (isPhoto) {
-                             [downloader
-                                 shareOriginalPhotoMediaEntities:
-                                     allMediaEntities];
-                         } else {
-                             [downloader
-                                 shareHighestQualityMediaEntities:
-                                     mediaEntities];
-                         }
+                         // This exports a temporary original/highest-quality
+                         // file and opens Apple's share sheet without adding
+                         // anything to Photos.
+                         dispatch_async(dispatch_get_main_queue(), ^{
+                             if (isPhoto) {
+                                 [downloader
+                                     shareOriginalPhotoMediaEntities:
+                                         allMediaEntities];
+                             } else {
+                                 [downloader
+                                     shareHighestQualityMediaEntities:
+                                         mediaEntities];
+                             }
+                         });
                      }];
     BHTMediaActionSetIdentifier(
         shareFileItem, BHTMediaActionShareFileIdentifier);
+    objc_setAssociatedObject(
+        shareFileItem, &kBHTMediaActionInjectedKey, @YES,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    NSUInteger insertIndex = newItems.count > 0 ? newItems.count - 1 : 0;
-    [newItems insertObject:downloadItem atIndex:insertIndex];
-    [newItems insertObject:shareFileItem atIndex:insertIndex + 1];
-    return BHTMediaActionApplyPreferences(newItems, mediaKind);
+    [newItems addObject:downloadItem];
+    [newItems addObject:shareFileItem];
+
+    NSArray* configured =
+        BHTMediaActionApplyPreferences(newItems, mediaKind);
+    for (id item in configured) {
+        objc_setAssociatedObject(
+            item, &kBHTMediaActionKindKey, @(mediaKind),
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return configured;
+}
+
+// X 12.9's timeline photo/video preview handlers call this media-specific
+// builder. The older _t1_actionItemsForStatus: path below is for a different,
+// general Tweet action sheet and never sees the long-press menu in the
+// recording.
+%hook UIViewController
+- (NSArray*)t1_mediaActivityViewActionItemsForStatus:(id)status
+                                             account:(id)account
+                                               image:(UIImage*)image
+                                           mediaInfo:(id)mediaInfo
+                                         shortTitles:(BOOL)shortTitles
+                                          sourceView:(UIView*)sourceView {
+    NSArray* origItems = %orig;
+    NSArray* allMediaEntities =
+        BHTActionTargetMediaEntities(mediaInfo, status);
+    NSArray* configuredItems = BHTConfiguredNativeMediaActionItems(
+        self, origItems, allMediaEntities);
+    // Returned items normally carry the kind into the final preview. The
+    // source-view fallback is only needed when the user hides every builder
+    // row and X later appends its untagged Share Via action.
+    if (allMediaEntities.count > 0 && sourceView &&
+        configuredItems.count == 0) {
+        BHTSetSourceMediaActionKind(
+            sourceView,
+            BHTMediaActionKindForEntities(allMediaEntities));
+    }
+    NSString* kindName =
+        allMediaEntities.count > 0
+            ? BHTMediaActionKindName(
+                  BHTMediaActionKindForEntities(allMediaEntities))
+            : @"unknown";
+    BHTRecordMediaActionObservation(
+        @"timelineBuilder", kindName,
+        origItems.count, configuredItems.count, allMediaEntities.count);
+    return configuredItems;
+}
+
+// X's player-preview wrapper calls the full selector above with sourceView=nil.
+// Normally the tagged returned items carry the media kind into the final
+// preview. If the user hides every builder item, preserve the kind only for
+// this wrapper's synchronous final-preview call so Share Via can also stay
+// hidden without leaking state from unrelated full-selector routes.
+- (NSArray*)t1_mediaActivityViewActionItemsForStatus:(id)status
+                                             account:(id)account
+                                               image:(UIImage*)image
+                                           mediaInfo:(id)mediaInfo
+                                         shortTitles:(BOOL)shortTitles {
+    NSArray* configuredItems = %orig;
+    if (configuredItems.count == 0) {
+        NSArray* allMediaEntities =
+            BHTActionTargetMediaEntities(mediaInfo, status);
+        if (allMediaEntities.count > 0) {
+            BHTSetPendingMediaActionKind(
+                BHTMediaActionKindForEntities(allMediaEntities));
+        }
+    }
+    return configuredItems;
+}
+
+// Retain the older general action-sheet hook for overflow/player routes that
+// still use it, but share the exact same download and preference pipeline.
+- (NSArray*)_t1_actionItemsForStatus:(__unsafe_unretained id)status
+                             account:(__unsafe_unretained id)account
+                     shareableEntity:(__unsafe_unretained id)shareableEntity
+                           entityURL:(__unsafe_unretained id)entityURL
+                              source:(__unsafe_unretained id)source
+                             options:(NSUInteger)options
+                     scribeComponent:(__unsafe_unretained id)scribeComponent
+                           doneBlock:
+                               (void (^ __autoreleasing *)(void))doneBlock {
+    NSArray* origItems = %orig;
+    NSArray* allMediaEntities =
+        BHTActionTargetMediaEntities(shareableEntity, status);
+    NSArray* configuredItems = BHTConfiguredNativeMediaActionItems(
+        self, origItems, allMediaEntities);
+    if (allMediaEntities.count > 0) {
+        BHTMediaActionKind kind =
+            BHTMediaActionKindForEntities(allMediaEntities);
+        BHTRecordMediaActionObservation(
+            @"legacyBuilder", BHTMediaActionKindName(kind),
+            origItems.count, configuredItems.count,
+            allMediaEntities.count);
+    }
+    return configuredItems;
+}
+%end
+
+// The timeline handler appends Share Via after the media builder returns.
+// Reapply the selected order to the final action array so that row can also be
+// moved or hidden. Only menus tagged by the media builder/source view are
+// touched, leaving every unrelated preview menu native.
+%hook TFNPreviewConfiguration
++ (id)configurationWithPreviewViewControllerBlock:
+          (UIViewController* (^)(void))previewViewControllerBlock
+                                      actionItems:
+                                          (__unsafe_unretained NSArray*)actionItems
+                                       sourceView:
+                                           (__unsafe_unretained UIView*)sourceView
+                                       sourceRect:(CGRect)sourceRect {
+    NSNumber* kindNumber = nil;
+    for (id item in actionItems) {
+        kindNumber =
+            objc_getAssociatedObject(item, &kBHTMediaActionKindKey);
+        if (kindNumber) break;
+    }
+    if (!kindNumber) {
+        kindNumber =
+            objc_getAssociatedObject(sourceView, &kBHTMediaActionKindKey);
+    }
+    NSMutableDictionary* threadDictionary =
+        NSThread.currentThread.threadDictionary;
+    if (!kindNumber) {
+        kindNumber =
+            threadDictionary[kBHTPendingMediaActionKindThreadKey];
+    }
+    [threadDictionary
+        removeObjectForKey:kBHTPendingMediaActionKindThreadKey];
+
+    NSArray* preparedItems = actionItems;
+    if (kindNumber) {
+        NSMutableArray* untaggedItems = [NSMutableArray array];
+        for (id item in actionItems) {
+            if (!objc_getAssociatedObject(item,
+                                          &kBHTMediaActionKindKey)) {
+                [untaggedItems addObject:item];
+            }
+        }
+        // X 12.9 appends exactly one Share Via item after the media builder.
+        // Giving that localized/title-only row a stable identifier makes it
+        // obey the editor in every language.
+        if (untaggedItems.count == 1) {
+            BHTMediaActionSetIdentifier(
+                untaggedItems.firstObject,
+                BHTMediaActionShareViaIdentifier);
+        }
+        preparedItems = actionItems;
+    }
+    NSArray* configuredItems =
+        kindNumber
+            ? BHTMediaActionApplyPreferences(
+                  preparedItems,
+                  (BHTMediaActionKind)kindNumber.integerValue)
+            : preparedItems;
+    if (kindNumber) {
+        BHTMediaActionKind kind =
+            (BHTMediaActionKind)kindNumber.integerValue;
+        BHTRecordMediaActionObservation(
+            @"timelineFinalPreview", BHTMediaActionKindName(kind),
+            actionItems.count, configuredItems.count, 0);
+    }
+    if (kindNumber && sourceView) {
+        objc_setAssociatedObject(
+            sourceView, &kBHTMediaActionKindKey, nil,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(
+            sourceView, &kBHTMediaActionKindTokenKey, nil,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return %orig(previewViewControllerBlock, configuredItems, sourceView,
+                 sourceRect);
 }
 %end
