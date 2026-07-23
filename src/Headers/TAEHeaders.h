@@ -20,6 +20,21 @@
 - (UIFont*)monospacedDigitFontOfSize:(CGFloat)size weight:(CGFloat)weight;
 @end
 
+// X 12.9's SwiftUI text and newer timeline surfaces use this catalog instead
+// of TFNUIDefaultFontGroup.
+@interface XFontCatalog : NSObject
++ (UIFont*)fontForToken:(NSInteger)token;
++ (UIFont*)customFontOfSize:(CGFloat)size
+                    weight:(NSInteger)weight
+     scalesWithDynamicType:(BOOL)scalesWithDynamicType;
++ (UIFont*)spoofingResistantUsernameFontForToken:(NSInteger)token;
++ (UIFont*)monospaceFixedFontOfSize:(CGFloat)size;
++ (UIFont*)contentFontWithOffset:(CGFloat)offset
+                          weight:(NSInteger)weight;
++ (UIFont*)tabularDigitsFontOfSize:(CGFloat)size weight:(CGFloat)weight;
++ (void)resetCachedFonts;
+@end
+
 @protocol TAEColorPalette
 - (id)colorPalette;
 - (UIColor*)primaryColorForOption:(NSUInteger)colorOption;

@@ -27,8 +27,25 @@ static UIWindow* KeyWindow(void) {
 
 static UIViewController* TopMostController(void) {
     UIViewController* top = KeyWindow().rootViewController;
-    while (top.presentedViewController)
-        top = top.presentedViewController;
+    BOOL advanced = YES;
+    while (top && advanced) {
+        advanced = NO;
+        if (top.presentedViewController) {
+            top = top.presentedViewController;
+            advanced = YES;
+        } else if ([top isKindOfClass:UINavigationController.class] &&
+                   ((UINavigationController*)top).visibleViewController) {
+            top = ((UINavigationController*)top).visibleViewController;
+            advanced = YES;
+        } else if ([top isKindOfClass:UITabBarController.class] &&
+                   ((UITabBarController*)top).selectedViewController) {
+            top = ((UITabBarController*)top).selectedViewController;
+            advanced = YES;
+        } else if (top.childViewControllers.count == 1) {
+            top = top.childViewControllers.firstObject;
+            advanced = YES;
+        }
+    }
     return top;
 }
 

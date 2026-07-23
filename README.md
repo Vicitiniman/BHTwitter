@@ -14,11 +14,13 @@ X 12.9.
 - Native tab reordering plus an independent, movable **My Likes** bottom
   destination that can sit alongside Grok, with normal in-tab navigation and
   swipe-back.
+- Appearance editors for the bottom bar, the Likes section, and X 12.9's
+  sidebar, with tap-to-hide tiles and drag reordering.
 - A Posts/Media view for Likes with a pinch-adjustable waterfall gallery,
   newest-first loading, continuous pagination, original-quality photo viewing,
   and highest-available MP4 playback.
 - Updated profile, search, Grok, timeline, confirmation, appearance, branding,
-  and accessibility-related features.
+  custom-font, and accessibility-related features.
 - A runtime compatibility report that can be shared from the Debug settings.
 
 Every new X 12.9 behavior has a setting; custom navigation is controlled from

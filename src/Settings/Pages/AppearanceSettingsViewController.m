@@ -108,6 +108,24 @@
     [self.navigationController pushViewController:editor animated:YES];
 }
 
+- (void)showSidebarNavigationVC:(NSDictionary*)sender {
+    Class editorClass =
+        objc_getClass("BHTSidebarNavigationViewController");
+    if (!editorClass) return;
+
+    UIViewController* editor = [[editorClass alloc] init];
+    if (self.account) {
+        [editor.navigationItem
+            setTitleView:
+                [objc_getClass("TFNTitleView")
+                    titleViewWithTitle:[[BHTBundle sharedBundle]
+                                           localizedStringForKey:
+                                               @"SIDEBAR_NAVIGATION_SETTINGS_TITLE"]
+                              subtitle:self.account.displayUsername]];
+    }
+    [self.navigationController pushViewController:editor animated:YES];
+}
+
 #pragma mark - Tab Bar Refresh
 
 - (void)refreshAllTabViewsWithTheming {
@@ -246,15 +264,27 @@
 }
 
 - (void)fontPickerViewControllerDidPickFont:(UIFontPickerViewController*)viewController {
+    UIFontDescriptor* descriptor = viewController.selectedFontDescriptor;
     NSString* fontName =
-        viewController.selectedFontDescriptor.fontAttributes[UIFontDescriptorNameAttribute];
-    NSString* fontFamily =
-        viewController.selectedFontDescriptor.fontAttributes[UIFontDescriptorFamilyAttribute];
+        descriptor.fontAttributes[UIFontDescriptorNameAttribute];
+    if (fontName.length == 0) {
+        fontName = [UIFont fontWithDescriptor:descriptor size:14].fontName;
+    }
+    if (fontName.length == 0) {
+        fontName =
+            descriptor.fontAttributes[UIFontDescriptorFamilyAttribute];
+    }
     NSString* fontType = objc_getAssociatedObject(viewController, @"fontType");
-    if ([fontType isEqualToString:@"bold"]) {
-        [[NSUserDefaults standardUserDefaults] setObject:fontName forKey:@"bhtwitter_font_2"];
-    } else {
-        [[NSUserDefaults standardUserDefaults] setObject:fontFamily forKey:@"bhtwitter_font_1"];
+    NSString* key = [fontType isEqualToString:@"bold"]
+                        ? @"bhtwitter_font_2"
+                        : @"bhtwitter_font_1";
+    if (fontName.length > 0) {
+        [[NSUserDefaults standardUserDefaults] setObject:fontName
+                                                  forKey:key];
+    }
+    Class catalog = NSClassFromString(@"XFontCatalog");
+    if ([catalog respondsToSelector:@selector(resetCachedFonts)]) {
+        [catalog performSelector:@selector(resetCachedFonts)];
     }
     [self updateVisibleToggles];
     [self.tableView reloadData];

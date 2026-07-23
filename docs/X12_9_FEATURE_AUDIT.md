@@ -65,11 +65,12 @@ Status meanings:
 | General | `show_scroll_indicator` | Ported | Typed account feature-switch accessor |
 | Appearance | theme and app icon controls | Ported | Modern settings pages and live theme reapply |
 | Appearance | custom navigation | Combined | Captures/reorders native tab entries; Grok remains native while opt-in Likes is an independent movable entry; selected editor tiles and the preview row both support drag reordering |
+| Appearance | sidebar navigation | New/runtime check | Reorders or hides Profile, Blue, History, Communities, News, Lists, Chat, Notifications, Spaces, and Follower Requests in X 12.9's live `TwitterDash` data source while preserving unknown/native rows |
 | Appearance | `tab_bar_theming` | Ported | Native selected/unselected colors |
 | Appearance | `restore_tab_labels` | Updated | Current `T1TabView` title path |
 | Appearance | `restore_launch_animation` | Updated | No longer forced on; strips only the X reveal mask |
 | Appearance | `restore_refresh_sounds` | Updated | No longer always on |
-| Appearance | `custom_fonts` | Ported | Modern picker with migrated preferences |
+| Appearance | `custom_fonts` | Updated | Persists concrete PostScript faces, migrates former family-name selections, and covers both legacy `TFNUIDefaultFontGroup` and X 12.9's SwiftUI `XFontCatalog` |
 | Timeline | `hide_who_to_follow` | Combined | Section model filter plus targeted iPad controller |
 | Timeline | `hide_timeline_prompts` | Combined | Prompt/module filter plus targeted update pill |
 | Timeline | `hide_discover_more` | Updated | Exact related-post entry IDs; no broad footer/header deletion |
@@ -85,7 +86,7 @@ Status meanings:
 | Grok | `hide_grok_sidebar` | Ported | Current navigation model filtering |
 | Grok | `hide_grok_create` | Updated | Composer, photo, timeline and immersive gates |
 | Grok | `disable_auto_translate` | Ported | Leaves manual translation available |
-| Media | `download_videos` | Ported | Modern action sheet, MP4/HLS/GIF and FFmpeg workflow |
+| Media | `download_videos` | Updated | Modern MP4/HLS/GIF quality sheet plus a tweak-owned timeline long press and `T1VideoDownloadViewModel` interception, preventing X's Blue-only downloader from taking the action |
 | Media | `dm_media_downloads` | Updated/runtime check | Default-off opt-in; Swift attachment view and save-plugin availability are reported |
 | Media | `voice_creation_enabled` | Updated/runtime check | X 12.9 keyed voice-post and voice-reply gates |
 | Media | `no_voice_messages` | Corrected/runtime check | Turns legacy DM and XChat voice creation/rendering off when enabled |

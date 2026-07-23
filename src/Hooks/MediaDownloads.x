@@ -5,6 +5,163 @@
 
 #import "HookHelpers.h"
 
+static char kBHTVideoDownloadMediaKey;
+static char kBHTVideoDownloadHandlerKey;
+
+static NSArray<TFSTwitterEntityMedia*>* BHTVideoEntitiesFromMediaInfos(
+    NSArray* mediaInfos) {
+    NSMutableArray<TFSTwitterEntityMedia*>* entities = [NSMutableArray array];
+    for (id info in mediaInfos) {
+        TFSTwitterEntityMedia* media =
+            [info respondsToSelector:@selector(mediaEntity)]
+                ? [info mediaEntity]
+                : nil;
+        if ((media.mediaType == 2 || media.mediaType == 3) &&
+            media.videoInfo.variants.count > 0) {
+            [entities addObject:media];
+        }
+    }
+    return [entities copy];
+}
+
+static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
+    if (!media || (media.mediaType != 2 && media.mediaType != 3)) {
+        return nil;
+    }
+    TFSTwitterEntityMediaVideoVariant* bestMP4 = nil;
+    TFSTwitterEntityMediaVideoVariant* fallback = nil;
+    for (TFSTwitterEntityMediaVideoVariant* variant in
+         media.videoInfo.variants) {
+        if (variant.url.length == 0) continue;
+        if (!fallback) fallback = variant;
+        if ([variant.contentType isEqualToString:@"video/mp4"] &&
+            (!bestMP4 || variant.bitrate > bestMP4.bitrate)) {
+            bestMP4 = variant;
+        }
+    }
+    NSString* rawURL = bestMP4.url;
+    if (rawURL.length == 0) rawURL = fallback.url;
+    if (rawURL.length == 0) rawURL = media.videoInfo.primaryUrl;
+    return rawURL.length > 0 ? [NSURL URLWithString:rawURL] : nil;
+}
+
+// MARK: - Tweet video/GIF long press
+
+// X 12.9 gives its own inline download action priority and routes non-Blue
+// accounts to an upsell. Install a media-specific long press that wins that
+// recognizer race and opens NeoFreeBird's quality/GIF picker directly.
+%hook _TtC21TweetMediaAttachments14MultiMediaView
+%property (nonatomic, strong) UILongPressGestureRecognizer* bhtDownloadLongPress;
+%property (nonatomic, strong) DownloadInlineButton* bhtDownloadHandler;
+- (void)layoutSubviews {
+    %orig;
+
+    NSArray* entities =
+        BHTVideoEntitiesFromMediaInfos(self.inlineMediaInfos);
+    BOOL enabled = [BHTSettings boolForKey:@"download_videos"] &&
+                   entities.count > 0;
+    if (enabled && !self.bhtDownloadLongPress) {
+        UILongPressGestureRecognizer* recognizer =
+            [[UILongPressGestureRecognizer alloc]
+                initWithTarget:self
+                        action:@selector(bhtHandleVideoDownloadLongPress:)];
+        recognizer.minimumPressDuration = 0.55;
+        self.bhtDownloadLongPress = recognizer;
+        [self addGestureRecognizer:recognizer];
+    }
+    self.bhtDownloadLongPress.enabled = enabled;
+
+    if (enabled) {
+        for (UIGestureRecognizer* recognizer in
+             self.gestureRecognizers) {
+            if (recognizer != self.bhtDownloadLongPress &&
+                [recognizer
+                    isKindOfClass:UILongPressGestureRecognizer.class]) {
+                [recognizer
+                    requireGestureRecognizerToFail:
+                        self.bhtDownloadLongPress];
+            }
+        }
+    }
+}
+%new
+- (void)bhtHandleVideoDownloadLongPress:
+    (UILongPressGestureRecognizer*)recognizer {
+    if (recognizer.state != UIGestureRecognizerStateBegan ||
+        ![BHTSettings boolForKey:@"download_videos"]) {
+        return;
+    }
+    NSArray* entities =
+        BHTVideoEntitiesFromMediaInfos(self.inlineMediaInfos);
+    if (entities.count == 0) return;
+    if (!self.bhtDownloadHandler) {
+        self.bhtDownloadHandler = [%c(DownloadInlineButton) new];
+    }
+    [self.bhtDownloadHandler
+        presentDownloadOptionsForMediaEntities:entities];
+}
+%end
+
+// X's video-settings row can still be reached from the player menu. Make it
+// eligible for video/GIF entities, retain the source entity on the native model,
+// then replace tappedDownload with the same NeoFreeBird picker.
+%hook TFSTwitterEntityMedia
+- (BOOL)allowDownload {
+    if ([BHTSettings boolForKey:@"download_videos"] &&
+        (self.mediaType == 2 || self.mediaType == 3)) {
+        return YES;
+    }
+    return %orig;
+}
+%end
+
+%hook T1VideoDownloadViewModel
++ (NSURL*)urlIfCanDownloadWithAccount:(id)account
+                          mediaEntity:
+                              (TFSTwitterEntityMedia*)mediaEntity {
+    if ([BHTSettings boolForKey:@"download_videos"]) {
+        NSURL* url = BHTPreferredDownloadURL(mediaEntity);
+        if (url) return url;
+    }
+    return %orig;
+}
+
++ (id)makeVideDownloaderWithAccount:(id)account
+                 fromViewController:(UIViewController*)viewController
+                        mediaEntity:
+                            (TFSTwitterEntityMedia*)mediaEntity
+                    statusViewModel:(id)statusViewModel
+                      scribeContext:(id)scribeContext {
+    id downloader = %orig;
+    if (downloader &&
+        [BHTSettings boolForKey:@"download_videos"] &&
+        (mediaEntity.mediaType == 2 || mediaEntity.mediaType == 3)) {
+        objc_setAssociatedObject(
+            downloader, &kBHTVideoDownloadMediaKey, mediaEntity,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return downloader;
+}
+
+- (void)tappedDownload {
+    TFSTwitterEntityMedia* media =
+        objc_getAssociatedObject(self, &kBHTVideoDownloadMediaKey);
+    if ([BHTSettings boolForKey:@"download_videos"] && media) {
+        DownloadInlineButton* handler =
+            objc_getAssociatedObject(self, &kBHTVideoDownloadHandlerKey);
+        if (!handler) {
+            handler = [%c(DownloadInlineButton) new];
+            objc_setAssociatedObject(
+                self, &kBHTVideoDownloadHandlerKey, handler,
+                OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        [handler presentDownloadOptionsForMediaEntities:@[media]];
+        return;
+    }
+    %orig;
+}
+%end
+
 // MARK: - DM video download
 
 // The DM UI is Swift now: media messages live in DMConversation.MessageAttachmentView,

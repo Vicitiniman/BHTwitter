@@ -60,6 +60,11 @@ static NSDictionary<NSString*, NSDictionary*>* BHTSettingsPages(void) {
                         @"action": @"showLikesNavigationVC:",
                         @"type": @"button"
                     },
+                    @{
+                        @"titleKey": @"SIDEBAR_NAVIGATION_EDITOR_TITLE",
+                        @"action": @"showSidebarNavigationVC:",
+                        @"type": @"button"
+                    },
                     @{@"key": @"tab_bar_theming",
                       @"default": @NO},
                     @{@"key": @"restore_tab_labels",
