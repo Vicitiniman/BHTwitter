@@ -29,13 +29,15 @@ static NSMutableDictionary* BHTMutableLikesDiagnostics(void) {
     dispatch_once(&onceToken, ^{
         diagnostics = [@{
             @"activityHistoryInitialTab": @4,
-            @"navigationMode": @"standaloneSyntheticEntry",
+            @"navigationMode": @"standaloneProtocolCompleteEntry",
             @"photoRequestVariant": @"orig",
             @"videoVariantPolicy": @"highestBitrateMP4",
             @"rootHookInstalled": @NO,
             @"nativeRootCreations": @0,
             @"nativeSurfaceCreations": @0,
             @"syntheticEntryCreations": @0,
+            @"factoryRequests": @0,
+            @"contentControllerRequests": @0,
             @"tabActivations": @0,
             @"topResets": @0,
             @"capturedMediaItems": @0,
@@ -1142,7 +1144,8 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
 @end
 
 @interface BHTLikesAppNavigationTabEntry
-    : NSObject <T1AppNavigationTabEntry>
+    : NSObject <T1AppNavigationTabEntry,
+                T1AppNavigationTabEntryContentControllerFactory>
 @property(nonatomic, strong) T1TabView* tabView;
 @property(nonatomic, strong) BHTLikesViewController* likesController;
 @end
@@ -1182,7 +1185,15 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
     return NO;
 }
 
-- (UIViewController*)rootTabViewController {
+- (id<T1AppNavigationTabEntryContentControllerFactory>)contentControllerFactory {
+    // This mirrors X 12.9's native BookmarksAppNavigationTabEntry: the entry
+    // is also its own content-controller factory. Omitting this required
+    // selector made X terminate before it ever requested our root controller.
+    BHTIncrementLikesDiagnostic(@"factoryRequests");
+    return self;
+}
+
+- (BHTLikesViewController*)likesControllerCreatingIfNeeded {
     if (!self.likesController) {
         self.likesController = [BHTLikesViewController new];
         BHTIncrementLikesDiagnostic(@"nativeRootCreations");
@@ -1198,6 +1209,15 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
                 : @"");
     }
     return self.likesController;
+}
+
+- (UIViewController*)createContentController {
+    BHTIncrementLikesDiagnostic(@"contentControllerRequests");
+    return [self likesControllerCreatingIfNeeded];
+}
+
+- (UIViewController*)rootTabViewController {
+    return [self likesControllerCreatingIfNeeded];
 }
 
 @end

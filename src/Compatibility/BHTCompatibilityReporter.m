@@ -134,7 +134,10 @@ static NSArray<NSString*>* BHTInterestingMethodsForClass(Class cls) {
                 [lower containsString:@"press"] ||
                 [lower containsString:@"activate"] ||
                 [lower containsString:@"navigation"] ||
-                [lower containsString:@"visible"]) {
+                [lower containsString:@"visible"] ||
+                [name isEqualToString:@"contentControllerFactory"] ||
+                [name isEqualToString:@"createContentController"] ||
+                [name isEqualToString:@"rootTabViewController"]) {
                 [names addObject:name];
             }
         }

@@ -91,14 +91,24 @@
 - (BOOL)tfn_prefersTabBarPinned;
 @end
 
+@protocol T1AppNavigationTabEntryContentControllerFactory <NSObject>
+- (UIViewController*)createContentController;
+- (UIViewController*)rootTabViewController;
+@end
+
 // Each entry backs one tab and owns its T1TabView; the app orders both the tab
-// buttons and their content view controllers from this single array.
+// buttons and their content view controllers from this single array. X 12.9
+// asks every entry for a content-controller factory before it asks that
+// factory for either controller, so all three methods are required.
 @protocol T1AppNavigationTabEntry <NSObject>
 - (T1TabView*)tabView;
 - (long long)panelID;
-- (UIViewController*)rootTabViewController;
+- (id<T1AppNavigationTabEntryContentControllerFactory>)contentControllerFactory;
 - (BOOL)isExcludedFromTabBar;
 - (BOOL)isTabViewSideBarOnly;
+@optional
+- (void)setupForTabBarPresentation;
+- (void)addContentReadyDependantObservers;
 @end
 
 @interface T1TabbedAppNavigationViewController : UIViewController
