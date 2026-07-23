@@ -231,6 +231,22 @@
 // variant exposes -inlineMediaInfos as well
 @interface _TtC21TweetMediaAttachments14MultiMediaView : UIView
 @property (nonatomic, readonly) NSArray* inlineMediaInfos;
+@property (nonatomic, strong) UILongPressGestureRecognizer* bhtDownloadLongPress;
+@property (nonatomic, strong) DownloadInlineButton* bhtDownloadHandler;
+@end
+
+// X 12.9 routes its native Blue-only video action through this model. NeoFreeBird
+// associates the originating entity with it and substitutes its own quality
+// picker when video downloads are enabled.
+@interface T1VideoDownloadViewModel : NSObject
++ (NSURL*)urlIfCanDownloadWithAccount:(id)account
+                          mediaEntity:(TFSTwitterEntityMedia*)mediaEntity;
++ (id)makeVideDownloaderWithAccount:(id)account
+                 fromViewController:(UIViewController*)viewController
+                        mediaEntity:(TFSTwitterEntityMedia*)mediaEntity
+                    statusViewModel:(id)statusViewModel
+                      scribeContext:(id)scribeContext;
+- (void)tappedDownload;
 @end
 
 #pragma mark - Host & web views

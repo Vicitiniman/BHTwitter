@@ -4,6 +4,7 @@
 //
 
 #import "HookHelpers.h"
+#import "Sidebar/BHTSidebarNavigationUtility.h"
 
 // While set, the custom-navigation tab gates (below) report their real values,
 // so callers can tell genuinely-held panels from ones only unlocked for the tab
@@ -797,10 +798,22 @@ static __thread BOOL DashPanelIDQuery = NO;
 
 %hook T1DashContentController
 
+- (id)initWithAccount:(id)account
+    interactionsTimelineBridge:(id)interactionsTimelineBridge {
+    id controller = %orig(account, interactionsTimelineBridge);
+    [BHTSidebarNavigationUtility
+        registerDashContentController:controller];
+    [BHTSidebarNavigationUtility
+        applyConfigurationToDashContentController:controller];
+    return controller;
+}
+
 - (void)updateVisiblePanelIDs {
     DashPanelIDQuery = YES;
     %orig;
     DashPanelIDQuery = NO;
+    [BHTSidebarNavigationUtility
+        applyConfigurationToDashContentController:self];
 }
 
 %end

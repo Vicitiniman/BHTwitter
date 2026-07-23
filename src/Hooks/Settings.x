@@ -196,19 +196,17 @@ static NSArray* sectionsWithNeoFreeBirdEntry(TFNItemsDataViewController* setting
                 TFNActionItem* fontAction = [%c(TFNActionItem)
                     actionItemWithTitle:fontName
                                  action:^{
-                                     if (self.configuration.includeFaces) {
-                                         [self setSelectedFontDescriptor:[UIFontDescriptor
-                                                                             fontDescriptorWithFontAttributes:@{
-                                                                                 UIFontDescriptorNameAttribute:
-                                                                                     fontName
-                                                                             }]];
-                                     } else {
-                                         [self setSelectedFontDescriptor:[UIFontDescriptor
-                                                                             fontDescriptorWithFontAttributes:@{
-                                                                                 UIFontDescriptorFamilyAttribute:
-                                                                                     fontName
-                                                                             }]];
-                                     }
+                                     // AddedFontCache supplies PostScript names,
+                                     // so persist a concrete face for both
+                                     // regular and bold choices. A family-only
+                                     // descriptor often cannot be reopened with
+                                     // UIFont fontWithName:.
+                                     [self setSelectedFontDescriptor:
+                                               [UIFontDescriptor
+                                                   fontDescriptorWithFontAttributes:@{
+                                                       UIFontDescriptorNameAttribute:
+                                                           fontName
+                                                   }]];
                                      [self.delegate fontPickerViewControllerDidPickFont:self];
                                  }];
                 [actions addObject:fontAction];
@@ -272,6 +270,39 @@ static NSArray* sectionsWithNeoFreeBirdEntry(TFNItemsDataViewController* setting
     return remapFont(origFont);
 }
 - (UIFont*)monospacedDigitFontOfSize:(CGFloat)size weight:(CGFloat)weight {
+    UIFont* origFont = %orig;
+    return remapFont(origFont);
+}
+%end
+
+// X 12.9's newer SwiftUI and timeline surfaces resolve fonts through
+// XFontCatalog instead of TFNUIDefaultFontGroup. Remap every public catalog
+// output while leaving the original font in place when no valid custom face is
+// selected.
+%hook XFontCatalog
++ (UIFont*)fontForToken:(NSInteger)token {
+    UIFont* origFont = %orig;
+    return remapFont(origFont);
+}
++ (UIFont*)customFontOfSize:(CGFloat)size
+                    weight:(NSInteger)weight
+     scalesWithDynamicType:(BOOL)scalesWithDynamicType {
+    UIFont* origFont = %orig;
+    return remapFont(origFont);
+}
++ (UIFont*)spoofingResistantUsernameFontForToken:(NSInteger)token {
+    UIFont* origFont = %orig;
+    return remapFont(origFont);
+}
++ (UIFont*)monospaceFixedFontOfSize:(CGFloat)size {
+    UIFont* origFont = %orig;
+    return remapFont(origFont);
+}
++ (UIFont*)contentFontWithOffset:(CGFloat)offset weight:(NSInteger)weight {
+    UIFont* origFont = %orig;
+    return remapFont(origFont);
+}
++ (UIFont*)tabularDigitsFontOfSize:(CGFloat)size weight:(CGFloat)weight {
     UIFont* origFont = %orig;
     return remapFont(origFont);
 }

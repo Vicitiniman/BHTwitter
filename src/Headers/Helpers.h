@@ -40,23 +40,45 @@ static UIImage* imageFromView(UIView* view) {
     return img;
 }
 
-static UIFont* _Nullable getDefaultFont(UIFont* font) {
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"custom_fonts"]) {
-        // https://stackoverflow.com/a/20515367/16619237
-        UIFontDescriptorSymbolicTraits fontDescriptorSymbolicTraits =
-            font.fontDescriptor.symbolicTraits;
-        BOOL isBold =
-            (fontDescriptorSymbolicTraits & UIFontDescriptorTraitBold) != 0;
+static UIFont* _Nullable BHTFontForStoredSelection(NSString* selection,
+                                                   CGFloat size,
+                                                   BOOL wantsBold) {
+    if (selection.length == 0) return nil;
 
-        if ([[NSUserDefaults standardUserDefaults]
-                objectForKey:isBold ? @"bhtwitter_font_2" : @"bhtwitter_font_1"]) {
-            NSString* fontName = [[NSUserDefaults standardUserDefaults]
-                objectForKey:isBold ? @"bhtwitter_font_2" : @"bhtwitter_font_1"];
-            return [UIFont fontWithName:fontName size:font.pointSize];
-        }
+    // Current builds persist a PostScript face name. Older BHTwitter builds
+    // saved the regular choice as a family name, which fontWithName: cannot
+    // reliably resolve. Keep those existing choices working by selecting the
+    // closest face from the family.
+    UIFont* direct = [UIFont fontWithName:selection size:size];
+    if (direct) return direct;
+
+    NSArray<NSString*>* faces = [UIFont fontNamesForFamilyName:selection];
+    UIFont* fallback = nil;
+    for (NSString* face in faces) {
+        UIFont* candidate = [UIFont fontWithName:face size:size];
+        if (!candidate) continue;
+        if (!fallback) fallback = candidate;
+        BOOL candidateBold =
+            (candidate.fontDescriptor.symbolicTraits &
+             UIFontDescriptorTraitBold) != 0;
+        if (candidateBold == wantsBold) return candidate;
+    }
+    return fallback;
+}
+
+static UIFont* _Nullable getDefaultFont(UIFont* font) {
+    if (!font ||
+        ![[NSUserDefaults standardUserDefaults] boolForKey:@"custom_fonts"]) {
         return nil;
     }
-    return nil;
+
+    UIFontDescriptorSymbolicTraits traits =
+        font.fontDescriptor.symbolicTraits;
+    BOOL isBold = (traits & UIFontDescriptorTraitBold) != 0;
+    NSString* key = isBold ? @"bhtwitter_font_2" : @"bhtwitter_font_1";
+    NSString* selection =
+        [[NSUserDefaults standardUserDefaults] stringForKey:key];
+    return BHTFontForStoredSelection(selection, font.pointSize, isBold);
 }
 static BOOL isDeviceLanguageRTL() {
     return [NSParagraphStyle _defaultWritingDirection] ==

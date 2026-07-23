@@ -10,11 +10,13 @@
 @interface TFSTwitterEntityMediaVideoVariant : NSObject
 @property (readonly, copy, nonatomic) NSString* contentType;
 @property (readonly, copy, nonatomic) NSString* url;
+@property (readonly, nonatomic) NSInteger bitrate;
 @end
 
 @interface TFSTwitterEntityMediaVideoInfo : NSObject
 @property (readonly, copy, nonatomic) NSArray* variants;
 @property (readonly, copy, nonatomic) NSString* primaryUrl;
+@property (readonly, nonatomic) double duration;
 @end
 
 @interface TFSTwitterEntityMedia : NSObject
@@ -22,6 +24,7 @@
 @property (readonly, copy, nonatomic) NSString* mediaURL;
 @property (nonatomic, assign, readonly)
     NSInteger mediaType; // 1 = photo, 2 = GIF, 3 = video
+@property (nonatomic, assign, readonly) BOOL allowDownload;
 @end
 
 @interface TFSTwitterMediaInfo : NSObject

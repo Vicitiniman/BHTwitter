@@ -1,6 +1,7 @@
 #import "Compatibility/BHTCompatibilityReporter.h"
 #import "Core/BHTSettings.h"
 #import "Likes/BHTLikesTab.h"
+#import "Sidebar/BHTSidebarNavigationUtility.h"
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -222,7 +223,10 @@ static NSArray* BHTRuntimeProbes(void) {
         BHTProbe(@"images", @"TFNTwitterAccount", @"isDoubleMaxZoomFor4KImagesEnabled", NO),
         BHTProbe(@"video", @"TFSTwitterEntityMediaVideoInfo", @"variants", NO),
         BHTProbe(@"video", @"TFSTwitterEntityMediaVideoInfo", @"primaryUrl", NO),
-        BHTProbe(@"video", @"T1VideoDownloadViewModel", @"init", NO),
+        BHTProbe(@"video", @"TFSTwitterEntityMedia", @"allowDownload", NO),
+        BHTProbe(@"video", @"T1VideoDownloadViewModel", @"urlIfCanDownloadWithAccount:mediaEntity:", YES),
+        BHTProbe(@"video", @"T1VideoDownloadViewModel", @"makeVideDownloaderWithAccount:fromViewController:mediaEntity:statusViewModel:scribeContext:", YES),
+        BHTProbe(@"video", @"T1VideoDownloadViewModel", @"tappedDownload", NO),
         BHTProbe(@"video", @"T1TwitterSwift.VideoControlsView", @"init", NO),
 
         BHTProbe(@"dmDownloads", @"DMConversation.MessageAttachmentView", @"layoutSubviews", NO),
@@ -264,6 +268,11 @@ static NSArray* BHTRuntimeProbes(void) {
 
         BHTProbe(@"confirmations", @"TTAStatusInlineActionButton", @"didTap", NO),
         BHTProbe(@"appearance", @"TFNUIDefaultFontGroup", @"sharedFontGroup", YES),
+        BHTProbe(@"appearance", @"XFontCatalog", @"fontForToken:", YES),
+        BHTProbe(@"appearance", @"XFontCatalog", @"customFontOfSize:weight:scalesWithDynamicType:", YES),
+
+        BHTProbe(@"sidebar", @"T1DashContentController", @"updateVisiblePanelIDs", NO),
+        BHTProbe(@"sidebar", @"T1DashNavigationViewFactory", @"buildDashViewControllerForAccount:dashContentController:", YES),
 
         BHTProbe(@"badges", @"TFSTwitterUser", @"isBlueVerified", NO),
         BHTProbe(@"badges", @"TFSTwitterUserSource", @"isBlueVerified", NO),
@@ -373,6 +382,10 @@ void BHTWriteCompatibilityReport(void) {
         @"features": featureSummary,
         @"settings": BHTSettingsSnapshot(),
         @"likesRuntime": BHTLikesDiagnosticsSnapshot(),
+        @"sidebarNavigation": @{
+            @"visibleItems":
+                [BHTSidebarNavigationUtility visibleItemIDsInOrder]
+        },
         @"navigationEntryClasses": BHTNavigationEntryClasses ?: @[],
         @"navigationMethods": BHTNavigationMethodSnapshot(),
         @"timelineItemObservations": BHTTimelineObservationSnapshot(),
