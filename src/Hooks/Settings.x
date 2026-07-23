@@ -281,23 +281,29 @@ static NSArray* sectionsWithNeoFreeBirdEntry(TFNItemsDataViewController* setting
 // selected.
 %hook XFontCatalog
 + (UIFont*)fontForToken:(NSInteger)token {
-    return remapFont(%orig);
+    UIFont* origFont = %orig;
+    return remapFont(origFont);
 }
 + (UIFont*)customFontOfSize:(CGFloat)size
                     weight:(NSInteger)weight
      scalesWithDynamicType:(BOOL)scalesWithDynamicType {
-    return remapFont(%orig);
+    UIFont* origFont = %orig;
+    return remapFont(origFont);
 }
 + (UIFont*)spoofingResistantUsernameFontForToken:(NSInteger)token {
-    return remapFont(%orig);
+    UIFont* origFont = %orig;
+    return remapFont(origFont);
 }
 + (UIFont*)monospaceFixedFontOfSize:(CGFloat)size {
-    return remapFont(%orig);
+    UIFont* origFont = %orig;
+    return remapFont(origFont);
 }
 + (UIFont*)contentFontWithOffset:(CGFloat)offset weight:(NSInteger)weight {
-    return remapFont(%orig);
+    UIFont* origFont = %orig;
+    return remapFont(origFont);
 }
 + (UIFont*)tabularDigitsFontOfSize:(CGFloat)size weight:(CGFloat)weight {
-    return remapFont(%orig);
+    UIFont* origFont = %orig;
+    return remapFont(origFont);
 }
 %end
