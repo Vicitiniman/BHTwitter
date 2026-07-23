@@ -22,7 +22,7 @@ FOUNDATION_EXPORT NSString* const
 // TFNActionItems are identified from their titles when no explicit identifier
 // has been attached.
 FOUNDATION_EXPORT void BHTMediaActionSetIdentifier(
-    nullable id item, NSString* identifier);
+    id _Nullable item, NSString* identifier);
 
 // Removes hidden known actions and orders the remaining known actions according
 // to the selected media type. Unknown and cancel items are always preserved.
