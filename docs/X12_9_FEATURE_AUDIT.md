@@ -65,7 +65,7 @@ Status meanings:
 | General | `show_scroll_indicator` | Ported | Typed account feature-switch accessor |
 | Appearance | theme and app icon controls | Ported | Modern settings pages and live theme reapply |
 | Appearance | custom navigation | Combined | Captures/reorders native tab entries; Grok remains native while opt-in Likes is an independent movable entry; selected editor tiles and the preview row both support drag reordering |
-| Appearance | sidebar navigation | New/runtime check | Reorders or hides Profile, Blue, History, Communities, News, Lists, Chat, Notifications, Spaces, and Follower Requests in X 12.9's live `TwitterDash` data source while preserving unknown/native rows |
+| Appearance | sidebar navigation | New/runtime check | Reorders or hides Profile, Blue, History, Communities, News, Lists, Chat, Notifications, Spaces, and Follower Requests through X 12.9's observable `TwitterDash` array setters while preserving unknown/native rows |
 | Appearance | `tab_bar_theming` | Ported | Native selected/unselected colors |
 | Appearance | `restore_tab_labels` | Updated | Current `T1TabView` title path |
 | Appearance | `restore_launch_animation` | Updated | No longer forced on; strips only the X reveal mask |
@@ -79,14 +79,14 @@ Status meanings:
 | Timeline | `hide_spaces` | Updated | Fleet-line visibility seam; runtime checked |
 | Timeline | `hide_custom_timelines` | Updated | Hides without persisting an empty pinned list |
 | Timeline | `remember_timeline_tab` | Updated | Disabled preference now leaves X's native value alone |
-| Timeline | `enable_likes_tab` | New/runtime check | Independent bottom destination backed by native Likes history; opens raw Activity History tab 4 on X 12.9 and can be placed separately from Grok |
+| Timeline | `enable_likes_tab` | New/runtime check | Independent bottom destination backed by native Likes history; opens raw Activity History tab 4 on X 12.9, resets before its first visible frame without a loading cover, and preserves position on later tab switches |
 | Timeline | `likes_media_waterfall` | New/runtime check | Newest-first native-section media extraction, continuous pagination, original photo URLs, highest-bitrate MP4 selection, 2–5 columns |
 | Grok | `enable_grok_translations` | Updated | Manual translation gates are no longer forced globally |
 | Grok | `hide_grok_analyze` | Updated | Backend switch plus current button paths |
 | Grok | `hide_grok_sidebar` | Ported | Current navigation model filtering |
 | Grok | `hide_grok_create` | Updated | Composer, photo, timeline and immersive gates |
 | Grok | `disable_auto_translate` | Ported | Leaves manual translation available |
-| Media | `download_videos` | Updated | Modern MP4/HLS/GIF quality sheet plus a tweak-owned timeline long press and `T1VideoDownloadViewModel` interception, preventing X's Blue-only downloader from taking the action |
+| Media | `download_videos` | Updated | Modern MP4/HLS/GIF quality sheet across X 12.9's `MultiMediaView`, separate carousel, legacy inline-video, overflow, and player-menu paths; MP4/GIF sources use native downloading and GIF conversion uses a local FFmpeg complex-filter graph |
 | Media | `dm_media_downloads` | Updated/runtime check | Default-off opt-in; Swift attachment view and save-plugin availability are reported |
 | Media | `voice_creation_enabled` | Updated/runtime check | X 12.9 keyed voice-post and voice-reply gates |
 | Media | `no_voice_messages` | Corrected/runtime check | Turns legacy DM and XChat voice creation/rendering off when enabled |
@@ -167,7 +167,8 @@ The JSON is also written to:
 
 `Library/Caches/BHTwitter-X12.9-Compatibility.json`
 
-The first device pass should focus on the native Likes root and post route, DM
+The first device pass should focus on sidebar hiding/reordering, timeline and
+carousel video/GIF downloads, the native Likes root and post route, DM
 save-action plugin, Home/Spaces Swift aliases, source-label model access, and
 highest-video preference. The report's privacy-safe `likesRuntime` section
 records root creation, selection/reset counts, media count, and URL acceptance.

@@ -6,6 +6,26 @@
 #import "Core/BHTBundle.h"
 #import "CustomTabBar/CustomTabBarUtility.h"
 
+#if defined(__arm64__)
+// Native Swift instance methods carry `self` in x20. BHTSidebarRuntime uses
+// this small ABI bridge when invoking TwitterDash's exported array setters;
+// a normal C function pointer would put the object in x1 and crash.
+__asm__(
+    ".text\n"
+    ".p2align 2\n"
+    ".private_extern _BHTInvokeTwitterDashArraySetter\n"
+    "_BHTInvokeTwitterDashArraySetter:\n"
+    "stp x29, x30, [sp, #-32]!\n"
+    "str x20, [sp, #16]\n"
+    "mov x29, sp\n"
+    "mov x20, x1\n"
+    "blr x2\n"
+    "ldr x20, [sp, #16]\n"
+    "ldp x29, x30, [sp], #32\n"
+    "ret\n"
+);
+#endif
+
 NSString* const BHTSidebarProfileItemID = @"profile";
 NSString* const BHTSidebarBlueItemID = @"blue";
 NSString* const BHTSidebarHistoryItemID = @"history";
@@ -184,8 +204,17 @@ static NSString* const kBHTSidebarVisibleItemsKey =
 }
 
 + (void)applyConfigurationToDashContentController:(id)controller {
-    id dataSource = [self dataSourceForDashContentController:controller];
     Class runtime = NSClassFromString(@"BHTSidebarRuntime");
+    SEL controllerSelector =
+        NSSelectorFromString(@"applyToDashContentController:");
+    if (controller && [runtime respondsToSelector:controllerSelector]) {
+        BOOL applied =
+            ((BOOL (*)(id, SEL, id))objc_msgSend)(
+                runtime, controllerSelector, controller);
+        if (applied) return;
+    }
+
+    id dataSource = [self dataSourceForDashContentController:controller];
     SEL selector = NSSelectorFromString(@"applyToDataSource:");
     if (!dataSource || ![runtime respondsToSelector:selector]) return;
     ((void (*)(id, SEL, id))objc_msgSend)(runtime, selector, dataSource);

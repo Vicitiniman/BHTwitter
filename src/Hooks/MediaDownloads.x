@@ -7,6 +7,55 @@
 
 static char kBHTVideoDownloadMediaKey;
 static char kBHTVideoDownloadHandlerKey;
+static char kBHTInlineDownloadLongPressKey;
+static char kBHTInlineDownloadHandlerKey;
+static char kBHTCarouselDownloadLongPressKey;
+static char kBHTCarouselDownloadHandlerKey;
+
+static id BHTObjectForSelector(id object, SEL selector) {
+    if (!object || ![object respondsToSelector:selector]) {
+        return nil;
+    }
+    return ((id (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
+// Do not key video detection off mediaType alone. X 12.9 has multiple media
+// model bridges and the numeric enum value is not stable across all of them;
+// videoInfo.variants is the reliable indication that the entity is downloadable.
+static BOOL BHTIsDownloadableVideoEntity(id media) {
+    id videoInfo = BHTObjectForSelector(media, @selector(videoInfo));
+    NSArray* variants = BHTObjectForSelector(videoInfo, @selector(variants));
+    return variants.count > 0;
+}
+
+static BOOL BHTVideoVariantIsMP4(id variant) {
+    NSString* contentType =
+        [BHTObjectForSelector(variant, @selector(contentType))
+            lowercaseString];
+    if ([contentType hasPrefix:@"video/mp4"]) {
+        return YES;
+    }
+    NSString* rawURL = BHTObjectForSelector(variant, @selector(url));
+    NSURL* url =
+        rawURL.length > 0 ? [NSURL URLWithString:rawURL] : nil;
+    return [url.pathExtension.lowercaseString isEqualToString:@"mp4"];
+}
+
+static void BHTPrioritizeDownloadLongPress(
+    UIView* root,
+    UILongPressGestureRecognizer* downloadRecognizer) {
+    if (!root || !downloadRecognizer) return;
+    EnumerateSubviewsRecursively(root, ^(UIView* view) {
+        for (UIGestureRecognizer* recognizer in view.gestureRecognizers) {
+            if (recognizer != downloadRecognizer &&
+                [recognizer
+                    isKindOfClass:UILongPressGestureRecognizer.class]) {
+                [recognizer
+                    requireGestureRecognizerToFail:downloadRecognizer];
+            }
+        }
+    });
+}
 
 static NSArray<TFSTwitterEntityMedia*>* BHTVideoEntitiesFromMediaInfos(
     NSArray* mediaInfos) {
@@ -15,17 +64,69 @@ static NSArray<TFSTwitterEntityMedia*>* BHTVideoEntitiesFromMediaInfos(
         TFSTwitterEntityMedia* media =
             [info respondsToSelector:@selector(mediaEntity)]
                 ? [info mediaEntity]
-                : nil;
-        if ((media.mediaType == 2 || media.mediaType == 3) &&
-            media.videoInfo.variants.count > 0) {
+                : info;
+        if (BHTIsDownloadableVideoEntity(media)) {
             [entities addObject:media];
         }
     }
     return [entities copy];
 }
 
+static TFSTwitterEntityMedia* BHTMediaEntityFromInlineView(id inlineView) {
+    id viewModel = BHTObjectForSelector(inlineView, @selector(viewModel));
+
+    // T1InlineMediaViewModel exposes the playing entity through
+    // playerSessionProducer.sessionProducible.mediaEntity.
+    id producer =
+        BHTObjectForSelector(viewModel, @selector(playerSessionProducer));
+    id producible =
+        BHTObjectForSelector(producer, @selector(sessionProducible));
+    id media = BHTObjectForSelector(producible, @selector(mediaEntity));
+
+    // Nearby X builds expose one of these shorter paths instead.
+    if (!media) {
+        media = BHTObjectForSelector(viewModel, @selector(mediaEntity));
+    }
+    if (!media) {
+        media = BHTObjectForSelector(inlineView, @selector(mediaEntity));
+    }
+    return BHTIsDownloadableVideoEntity(media) ? media : nil;
+}
+
+static NSArray* BHTVideoEntitiesFromStatus(id status) {
+    NSMutableArray* results = [NSMutableArray array];
+    NSMutableSet* seen = [NSMutableSet set];
+    void (^appendMedia)(NSArray*) = ^(NSArray* mediaEntities) {
+        for (id media in mediaEntities) {
+            if (!BHTIsDownloadableVideoEntity(media)) continue;
+            NSValue* identity =
+                [NSValue valueWithNonretainedObject:media];
+            if ([seen containsObject:identity]) continue;
+            [seen addObject:identity];
+            [results addObject:media];
+        }
+    };
+
+    id nestedStatus = BHTObjectForSelector(status, @selector(status));
+    NSArray* sources =
+        nestedStatus && nestedStatus != status ? @[status, nestedStatus]
+                                               : @[status ?: NSNull.null];
+    for (id source in sources) {
+        if (source == NSNull.null) continue;
+        appendMedia(BHTObjectForSelector(
+            source, @selector(representedMediaEntities)));
+        for (NSString* selectorName in
+             @[@"extendedEntities", @"entities"]) {
+            id entitySet = BHTObjectForSelector(
+                source, NSSelectorFromString(selectorName));
+            appendMedia(BHTObjectForSelector(entitySet, @selector(media)));
+        }
+    }
+    return [results copy];
+}
+
 static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
-    if (!media || (media.mediaType != 2 && media.mediaType != 3)) {
+    if (!BHTIsDownloadableVideoEntity(media)) {
         return nil;
     }
     TFSTwitterEntityMediaVideoVariant* bestMP4 = nil;
@@ -34,7 +135,7 @@ static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
          media.videoInfo.variants) {
         if (variant.url.length == 0) continue;
         if (!fallback) fallback = variant;
-        if ([variant.contentType isEqualToString:@"video/mp4"] &&
+        if (BHTVideoVariantIsMP4(variant) &&
             (!bestMP4 || variant.bitrate > bestMP4.bitrate)) {
             bestMP4 = variant;
         }
@@ -65,24 +166,16 @@ static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
             [[UILongPressGestureRecognizer alloc]
                 initWithTarget:self
                         action:@selector(bhtHandleVideoDownloadLongPress:)];
-        recognizer.minimumPressDuration = 0.55;
+        recognizer.minimumPressDuration = 0.4;
+        recognizer.cancelsTouchesInView = NO;
         self.bhtDownloadLongPress = recognizer;
         [self addGestureRecognizer:recognizer];
     }
     self.bhtDownloadLongPress.enabled = enabled;
 
-    if (enabled) {
-        for (UIGestureRecognizer* recognizer in
-             self.gestureRecognizers) {
-            if (recognizer != self.bhtDownloadLongPress &&
-                [recognizer
-                    isKindOfClass:UILongPressGestureRecognizer.class]) {
-                [recognizer
-                    requireGestureRecognizerToFail:
-                        self.bhtDownloadLongPress];
-            }
-        }
-    }
+    if (enabled)
+        BHTPrioritizeDownloadLongPress(
+            self, self.bhtDownloadLongPress);
 }
 %new
 - (void)bhtHandleVideoDownloadLongPress:
@@ -102,13 +195,116 @@ static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
 }
 %end
 
+// Mixed-media and multi-item posts use the separate carousel class, which has
+// the same media-info API but is not a MultiMediaView subclass.
+%hook _TtC21TweetMediaAttachments22MultiMediaCarouselView
+- (void)layoutSubviews {
+    %orig;
+
+    NSArray* entities =
+        BHTVideoEntitiesFromMediaInfos(self.inlineMediaInfos);
+    BOOL enabled = [BHTSettings boolForKey:@"download_videos"] &&
+                   entities.count > 0;
+    UILongPressGestureRecognizer* recognizer =
+        objc_getAssociatedObject(self, &kBHTCarouselDownloadLongPressKey);
+    if (enabled && !recognizer) {
+        recognizer = [[UILongPressGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(bhtHandleCarouselDownloadLongPress:)];
+        recognizer.minimumPressDuration = 0.4;
+        recognizer.cancelsTouchesInView = NO;
+        objc_setAssociatedObject(
+            self, &kBHTCarouselDownloadLongPressKey, recognizer,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [self addGestureRecognizer:recognizer];
+    }
+    recognizer.enabled = enabled;
+
+    if (enabled)
+        BHTPrioritizeDownloadLongPress(self, recognizer);
+}
+%new
+- (void)bhtHandleCarouselDownloadLongPress:
+    (UILongPressGestureRecognizer*)recognizer {
+    if (recognizer.state != UIGestureRecognizerStateBegan ||
+        ![BHTSettings boolForKey:@"download_videos"]) {
+        return;
+    }
+
+    NSArray* entities =
+        BHTVideoEntitiesFromMediaInfos(self.inlineMediaInfos);
+    if (entities.count == 0) return;
+
+    DownloadInlineButton* handler =
+        objc_getAssociatedObject(self, &kBHTCarouselDownloadHandlerKey);
+    if (!handler) {
+        handler = [%c(DownloadInlineButton) new];
+        objc_setAssociatedObject(
+            self, &kBHTCarouselDownloadHandlerKey, handler,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    [handler presentDownloadOptionsForMediaEntities:entities];
+}
+%end
+
+// Timeline videos can still use the legacy T1InlineMediaView while GIFs use
+// TweetMediaAttachments.MultiMediaView. Cover that path as well so both media
+// types expose the same NeoFreeBird long-press menu.
+%hook T1InlineMediaView
+- (void)layoutSubviews {
+    %orig;
+
+    TFSTwitterEntityMedia* media = BHTMediaEntityFromInlineView(self);
+    BOOL enabled =
+        [BHTSettings boolForKey:@"download_videos"] && media != nil;
+    UILongPressGestureRecognizer* recognizer =
+        objc_getAssociatedObject(self, &kBHTInlineDownloadLongPressKey);
+    if (enabled && !recognizer) {
+        recognizer = [[UILongPressGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(bhtHandleInlineVideoDownloadLongPress:)];
+        recognizer.minimumPressDuration = 0.4;
+        recognizer.cancelsTouchesInView = NO;
+        objc_setAssociatedObject(
+            self, &kBHTInlineDownloadLongPressKey, recognizer,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [self addGestureRecognizer:recognizer];
+    }
+    recognizer.enabled = enabled;
+
+    if (enabled)
+        BHTPrioritizeDownloadLongPress(self, recognizer);
+}
+%new
+- (void)bhtHandleInlineVideoDownloadLongPress:
+    (UILongPressGestureRecognizer*)recognizer {
+    if (recognizer.state != UIGestureRecognizerStateBegan ||
+        ![BHTSettings boolForKey:@"download_videos"]) {
+        return;
+    }
+
+    TFSTwitterEntityMedia* media = BHTMediaEntityFromInlineView(self);
+    if (!media) return;
+
+    DownloadInlineButton* handler =
+        objc_getAssociatedObject(self, &kBHTInlineDownloadHandlerKey);
+    if (!handler) {
+        handler = [%c(DownloadInlineButton) new];
+        objc_setAssociatedObject(
+            self, &kBHTInlineDownloadHandlerKey, handler,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    [handler presentDownloadOptionsForMediaEntities:@[media]];
+}
+%end
+
 // X's video-settings row can still be reached from the player menu. Make it
 // eligible for video/GIF entities, retain the source entity on the native model,
 // then replace tappedDownload with the same NeoFreeBird picker.
 %hook TFSTwitterEntityMedia
 - (BOOL)allowDownload {
     if ([BHTSettings boolForKey:@"download_videos"] &&
-        (self.mediaType == 2 || self.mediaType == 3)) {
+        BHTIsDownloadableVideoEntity(self)) {
         return YES;
     }
     return %orig;
@@ -135,7 +331,7 @@ static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
     id downloader = %orig;
     if (downloader &&
         [BHTSettings boolForKey:@"download_videos"] &&
-        (mediaEntity.mediaType == 2 || mediaEntity.mediaType == 3)) {
+        BHTIsDownloadableVideoEntity(mediaEntity)) {
         objc_setAssociatedObject(
             downloader, &kBHTVideoDownloadMediaKey, mediaEntity,
             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -388,22 +584,12 @@ static NSArray* DMVideoEntities(UIView* attachmentView) {
                            doneBlock:(__unsafe_unretained id)doneBlock {
     NSArray* origItems = %orig;
 
-    if (![BHTSettings boolForKey:@"download_videos"] ||
-        ![status respondsToSelector:@selector(entities)]) {
+    if (![BHTSettings boolForKey:@"download_videos"]) {
         return origItems;
     }
 
-    NSArray* mediaEntities = [[status entities] media];
-    BOOL hasVideo = NO;
-    // mediaType 2 = GIF, 3 = video
-    for (TFSTwitterEntityMedia* media in mediaEntities) {
-        if ([media isKindOfClass:%c(TFSTwitterEntityMedia)] &&
-            (media.mediaType == 2 || media.mediaType == 3)) {
-            hasVideo = YES;
-            break;
-        }
-    }
-    if (!hasVideo) {
+    NSArray* mediaEntities = BHTVideoEntitiesFromStatus(status);
+    if (mediaEntities.count == 0) {
         return origItems;
     }
 

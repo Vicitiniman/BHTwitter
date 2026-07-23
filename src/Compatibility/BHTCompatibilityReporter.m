@@ -228,6 +228,9 @@ static NSArray* BHTRuntimeProbes(void) {
         BHTProbe(@"video", @"T1VideoDownloadViewModel", @"makeVideDownloaderWithAccount:fromViewController:mediaEntity:statusViewModel:scribeContext:", YES),
         BHTProbe(@"video", @"T1VideoDownloadViewModel", @"tappedDownload", NO),
         BHTProbe(@"video", @"T1TwitterSwift.VideoControlsView", @"init", NO),
+        BHTProbe(@"video", @"TweetMediaAttachments.MultiMediaView", @"inlineMediaInfos", NO),
+        BHTProbe(@"video", @"TweetMediaAttachments.MultiMediaCarouselView", @"inlineMediaInfos", NO),
+        BHTProbe(@"video", @"T1InlineMediaView", @"viewModel", NO),
 
         BHTProbe(@"dmDownloads", @"DMConversation.MessageAttachmentView", @"layoutSubviews", NO),
         BHTProbe(@"dmDownloads", @"DMConversation.MessageSaveActionPlugin", @"init", NO),

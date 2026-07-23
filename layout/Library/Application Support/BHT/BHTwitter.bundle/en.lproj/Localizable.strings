@@ -327,7 +327,6 @@
 "LIKES_NAV_VIDEOS_TITLE" = "Videos";
 "LIKES_NAV_ARTICLES_TITLE" = "Articles";
 "LIKES_NAV_LIKES_TITLE" = "Likes";
-"LIKES_INITIAL_LOADING_LABEL" = "Loading newest Likes";
 "SIDEBAR_NAVIGATION_EDITOR_TITLE" = "Edit sidebar";
 "SIDEBAR_NAVIGATION_SETTINGS_TITLE" = "Sidebar";
 "SIDEBAR_NAVIGATION_GRID_DETAIL" = "Tap an item to show or hide it. Drag the tiles or the bar below to reorder X's sidebar.";

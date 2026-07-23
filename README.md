@@ -10,7 +10,8 @@ X 12.9.
   cards, articles, and video ad paths.
 - Highest-quality photo loading, optional full-frame timeline media, and a
   highest-video preference.
-- Modern video/GIF downloads, including supported Direct Message videos.
+- Modern video/GIF downloads across X 12.9's timeline, carousel, player-menu,
+  overflow-menu, and supported Direct Message paths.
 - Native tab reordering plus an independent, movable **My Likes** bottom
   destination that can sit alongside Grok, with normal in-tab navigation and
   swipe-back.
@@ -22,6 +23,10 @@ X 12.9.
 - Updated profile, search, Grok, timeline, confirmation, appearance, branding,
   custom-font, and accessibility-related features.
 - A runtime compatibility report that can be shared from the Debug settings.
+
+Beta 11 retargets X 12.9's separate video/carousel views, repairs GIF
+conversion, applies sidebar changes through its observable Swift data-source
+setters, and removes the first-open Likes loading cover.
 
 Every new X 12.9 behavior has a setting; custom navigation is controlled from
 its editor. Compatibility shims preserve native behavior when their option is

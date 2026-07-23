@@ -818,6 +818,22 @@ static __thread BOOL DashPanelIDQuery = NO;
 
 %end
 
+%hook T1DashNavigationViewFactory
+
++ (id)buildDashViewControllerForAccount:(id)account
+                  dashContentController:(id)dashContentController {
+    // This is the last point before TwitterDash snapshots its Swift data
+    // source into the SwiftUI drawer. Applying here covers controllers whose
+    // private data source is populated after T1DashContentController's init.
+    [BHTSidebarNavigationUtility
+        registerDashContentController:dashContentController];
+    [BHTSidebarNavigationUtility
+        applyConfigurationToDashContentController:dashContentController];
+    return %orig(account, dashContentController);
+}
+
+%end
+
 %hook T1TabbedAppNavigationViewController
 
 - (NSArray*)visiblePanelIDsForAppNavigation:(id)appNavigation {
