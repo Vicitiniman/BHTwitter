@@ -12,6 +12,8 @@ FOUNDATION_EXPORT NSString* const BHTMediaActionLikeIdentifier;
 FOUNDATION_EXPORT NSString* const BHTMediaActionCopyLinkIdentifier;
 FOUNDATION_EXPORT NSString* const BHTMediaActionReactIdentifier;
 FOUNDATION_EXPORT NSString* const BHTMediaActionOfflineIdentifier;
+FOUNDATION_EXPORT NSString* const BHTMediaActionEditPhotoIdentifier;
+FOUNDATION_EXPORT NSString* const BHTMediaActionGrokEditIdentifier;
 FOUNDATION_EXPORT NSString* const BHTMediaActionDownloadIdentifier;
 FOUNDATION_EXPORT NSString* const BHTMediaActionShareFileIdentifier;
 FOUNDATION_EXPORT NSString* const BHTMediaActionShareViaIdentifier;
@@ -32,6 +34,8 @@ FOUNDATION_EXPORT NSArray* BHTMediaActionApplyPreferences(
 @interface BHTMediaActionUtility : NSObject
 
 + (NSArray<NSString*>*)canonicalActionIdentifiers;
++ (NSArray<NSString*>*)canonicalActionIdentifiersForKind:
+    (BHTMediaActionKind)kind;
 + (NSArray<NSDictionary*>*)availableActionsForKind:
     (BHTMediaActionKind)kind;
 + (nullable NSDictionary*)metadataForIdentifier:(NSString*)identifier

@@ -30,9 +30,12 @@ X 12.9.
   custom-font, and accessibility-related features.
 - A runtime compatibility report that can be shared from the Debug settings.
 
-Beta 12 adds customizable native media menus and file-only sharing, hardens the
-first-open Likes reset while preserving later reading position, expands the
-waterfall viewer gestures, and adds the selectable Twitter bird/name branding.
+Beta 13 connects those customizable Download and Share File actions to X
+12.9's actual Home-timeline photo/video/GIF preview menu, makes every native
+row in that menu hideable and reorderable, and retires the competing fallback
+long-press whenever the native media builder is available. Beta 12 added the
+first-open Likes reset, waterfall viewer gestures, and selectable Twitter
+bird/name branding.
 
 Every new X 12.9 behavior has a setting; custom navigation is controlled from
 its editor. Compatibility shims preserve native behavior when their option is

@@ -10,6 +10,8 @@
 static NSArray<NSString*>* BHTNavigationEntryClasses;
 static NSMutableDictionary<NSString*, NSMutableDictionary*>*
     BHTTimelineItemObservations;
+static NSMutableDictionary<NSString*, NSMutableDictionary*>*
+    BHTMediaActionObservations;
 
 static NSObject* BHTObservationLock(void) {
     static NSObject* lock;
@@ -114,6 +116,77 @@ static NSDictionary* BHTTimelineObservationSnapshot(void) {
                                 @selector(localizedCaseInsensitiveCompare:)],
                     @"runtimeShape": observation[@"runtimeShape"] ?: @{}
                 };
+            }];
+    }
+    return [snapshot copy];
+}
+
+void BHTRecordMediaActionObservation(NSString* stage,
+                                     NSString* kind,
+                                     NSUInteger originalCount,
+                                     NSUInteger configuredCount,
+                                     NSUInteger mediaEntityCount) {
+    if (stage.length == 0) return;
+    @synchronized(BHTObservationLock()) {
+        if (!BHTMediaActionObservations) {
+            BHTMediaActionObservations =
+                [NSMutableDictionary dictionary];
+        }
+        NSMutableDictionary* observation =
+            BHTMediaActionObservations[stage];
+        if (!observation) {
+            observation = [NSMutableDictionary dictionary];
+            BHTMediaActionObservations[stage] = observation;
+        }
+        observation[@"hits"] =
+            @([observation[@"hits"] unsignedIntegerValue] + 1);
+        observation[@"kind"] = kind ?: @"unknown";
+        observation[@"originalCount"] = @(originalCount);
+        observation[@"configuredCount"] = @(configuredCount);
+        observation[@"mediaEntityCount"] = @(mediaEntityCount);
+
+        NSString* safeKind = kind.length > 0 ? kind : @"unknown";
+        NSMutableDictionary* byKind = observation[@"byKind"];
+        if (!byKind) {
+            byKind = [NSMutableDictionary dictionary];
+            observation[@"byKind"] = byKind;
+        }
+        NSMutableDictionary* kindObservation = byKind[safeKind];
+        if (!kindObservation) {
+            kindObservation = [NSMutableDictionary dictionary];
+            byKind[safeKind] = kindObservation;
+        }
+        kindObservation[@"hits"] =
+            @([kindObservation[@"hits"] unsignedIntegerValue] + 1);
+        kindObservation[@"originalCount"] = @(originalCount);
+        kindObservation[@"configuredCount"] = @(configuredCount);
+        kindObservation[@"mediaEntityCount"] = @(mediaEntityCount);
+    }
+}
+
+static NSDictionary* BHTMediaActionObservationSnapshot(void) {
+    NSMutableDictionary* snapshot =
+        [NSMutableDictionary dictionary];
+    @synchronized(BHTObservationLock()) {
+        [BHTMediaActionObservations
+            enumerateKeysAndObjectsUsingBlock:^(
+                NSString* stage, NSMutableDictionary* observation,
+                BOOL* stop) {
+                NSMutableDictionary* stageSnapshot =
+                    [observation mutableCopy];
+                NSDictionary* byKind = observation[@"byKind"];
+                if (byKind) {
+                    NSMutableDictionary* kindSnapshot =
+                        [NSMutableDictionary dictionary];
+                    [byKind enumerateKeysAndObjectsUsingBlock:^(
+                                NSString* kind,
+                                NSDictionary* kindObservation,
+                                BOOL* innerStop) {
+                        kindSnapshot[kind] = [kindObservation copy];
+                    }];
+                    stageSnapshot[@"byKind"] = [kindSnapshot copy];
+                }
+                snapshot[stage] = [stageSnapshot copy];
             }];
     }
     return [snapshot copy];
@@ -232,7 +305,10 @@ static NSArray* BHTRuntimeProbes(void) {
         BHTProbe(@"video", @"TweetMediaAttachments.MultiMediaView", @"inlineMediaInfos", NO),
         BHTProbe(@"video", @"TweetMediaAttachments.MultiMediaCarouselView", @"inlineMediaInfos", NO),
         BHTProbe(@"video", @"T1InlineMediaView", @"viewModel", NO),
-        BHTProbe(@"mediaActions", @"UIViewController", @"_t1_actionItemsForStatus:account:shareableEntity:entityURL:source:options:scribeComponent:doneBlock:", YES),
+        BHTProbe(@"mediaActions", @"UIViewController", @"t1_mediaActivityViewActionItemsForStatus:account:image:mediaInfo:shortTitles:sourceView:", NO),
+        BHTProbe(@"mediaActions", @"UIViewController", @"t1_mediaActivityViewActionItemsForStatus:account:image:mediaInfo:shortTitles:", NO),
+        BHTProbe(@"mediaActions", @"UIViewController", @"_t1_actionItemsForStatus:account:shareableEntity:entityURL:source:options:scribeComponent:doneBlock:", NO),
+        BHTProbe(@"mediaActions", @"TFNPreviewConfiguration", @"configurationWithPreviewViewControllerBlock:actionItems:sourceView:sourceRect:", YES),
 
         BHTProbe(@"dmDownloads", @"DMConversation.MessageAttachmentView", @"layoutSubviews", NO),
         BHTProbe(@"dmDownloads", @"DMConversation.MessageSaveActionPlugin", @"init", NO),
@@ -414,6 +490,7 @@ void BHTWriteCompatibilityReport(void) {
         @"navigationEntryClasses": BHTNavigationEntryClasses ?: @[],
         @"navigationMethods": BHTNavigationMethodSnapshot(),
         @"timelineItemObservations": BHTTimelineObservationSnapshot(),
+        @"mediaActionRuntime": BHTMediaActionObservationSnapshot(),
         @"probes": probes
     };
 

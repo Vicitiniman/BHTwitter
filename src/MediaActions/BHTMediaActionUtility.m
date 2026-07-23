@@ -10,6 +10,8 @@ NSString* const BHTMediaActionLikeIdentifier = @"like";
 NSString* const BHTMediaActionCopyLinkIdentifier = @"copy_link";
 NSString* const BHTMediaActionReactIdentifier = @"react";
 NSString* const BHTMediaActionOfflineIdentifier = @"offline";
+NSString* const BHTMediaActionEditPhotoIdentifier = @"edit_photo";
+NSString* const BHTMediaActionGrokEditIdentifier = @"grok_edit";
 NSString* const BHTMediaActionDownloadIdentifier = @"download";
 NSString* const BHTMediaActionShareFileIdentifier = @"share_file";
 NSString* const BHTMediaActionShareViaIdentifier = @"share_via";
@@ -95,6 +97,37 @@ static NSString* BHTMediaActionTitle(id item) {
     return nil;
 }
 
+static NSString* BHTMediaActionNativeIdentifier(id item) {
+    for (NSString* selectorName in
+         @[@"actionIdentifier", @"actionId", @"identifier"]) {
+        SEL selector = NSSelectorFromString(selectorName);
+        if (![item respondsToSelector:selector]) continue;
+        NSMethodSignature* signature =
+            [item methodSignatureForSelector:selector];
+        const char* returnType = signature.methodReturnType;
+        while (returnType &&
+               strchr("rnNoORV", returnType[0]) != NULL) {
+            returnType++;
+        }
+        if (!returnType || returnType[0] != '@') continue;
+        @try {
+            NSString* identifier = BHTMediaActionStringValue(
+                ((id(*)(id, SEL))objc_msgSend)(item, selector));
+            if (identifier.length) {
+                NSString* lowered = identifier.lowercaseString;
+                NSArray<NSString*>* components =
+                    [lowered componentsSeparatedByCharactersInSet:
+                                 NSCharacterSet
+                                     .alphanumericCharacterSet
+                                     .invertedSet];
+                return [components componentsJoinedByString:@""];
+            }
+        } @catch (__unused NSException* exception) {
+        }
+    }
+    return nil;
+}
+
 static NSString* BHTNormalizedMediaActionTitle(NSString* title) {
     if (!title.length) return @"";
     NSString* normalized =
@@ -122,6 +155,42 @@ static NSString* BHTMediaActionInferredIdentifier(id item) {
         objc_getAssociatedObject(item, &kBHTMediaActionIdentifierKey);
     if (explicit.length) return explicit;
 
+    NSString* nativeIdentifier =
+        BHTMediaActionNativeIdentifier(item);
+    if ([nativeIdentifier containsString:@"offline"]) {
+        return BHTMediaActionOfflineIdentifier;
+    }
+    if ([nativeIdentifier containsString:@"reactwith"]) {
+        return BHTMediaActionReactIdentifier;
+    }
+    if ([nativeIdentifier containsString:@"copyphoto"] ||
+        [nativeIdentifier containsString:@"copyvideo"] ||
+        [nativeIdentifier containsString:@"copygif"] ||
+        [nativeIdentifier containsString:@"copylink"]) {
+        return BHTMediaActionCopyLinkIdentifier;
+    }
+    if ([nativeIdentifier containsString:@"editphoto"]) {
+        return BHTMediaActionEditPhotoIdentifier;
+    }
+    if ([nativeIdentifier containsString:@"grokimagine"] ||
+        [nativeIdentifier containsString:@"grokedit"] ||
+        [nativeIdentifier containsString:@"grokcreate"]) {
+        return BHTMediaActionGrokEditIdentifier;
+    }
+    if ([nativeIdentifier containsString:@"tweetphoto"] ||
+        [nativeIdentifier containsString:@"tweetvideo"] ||
+        [nativeIdentifier containsString:@"tweetgif"]) {
+        return BHTMediaActionLikeIdentifier;
+    }
+    if ([nativeIdentifier containsString:@"savephoto"] ||
+        [nativeIdentifier containsString:@"downloadvideo"] ||
+        [nativeIdentifier containsString:@"downloadgif"]) {
+        return BHTMediaActionDownloadIdentifier;
+    }
+    if ([nativeIdentifier containsString:@"sharevia"]) {
+        return BHTMediaActionShareViaIdentifier;
+    }
+
     NSString* title =
         BHTNormalizedMediaActionTitle(BHTMediaActionTitle(item));
     if (!title.length) return nil;
@@ -136,8 +205,34 @@ static NSString* BHTMediaActionInferredIdentifier(id item) {
          [title containsString:@"media"])) {
         return BHTMediaActionReactIdentifier;
     }
-    if (BHTTitleContainsEvery(title, @[@"copy", @"link"])) {
+    if (([title hasPrefix:@"tweet "] ||
+         [title hasPrefix:@"post "]) &&
+        ([title containsString:@"photo"] ||
+         [title containsString:@"video"] ||
+         [title containsString:@"gif"] ||
+         [title containsString:@"media"])) {
+        // Keep the established internal identifier so existing Beta 12 menu
+        // preferences migrate cleanly. The editor now labels this native row
+        // as Tweet Photo/Video/GIF instead of the misleading "Like".
+        return BHTMediaActionLikeIdentifier;
+    }
+    if ([title containsString:@"copy"] &&
+        ([title containsString:@"link"] ||
+         [title containsString:@"photo"] ||
+         [title containsString:@"video"] ||
+         [title containsString:@"gif"] ||
+         [title containsString:@"media"])) {
         return BHTMediaActionCopyLinkIdentifier;
+    }
+    if ([title containsString:@"edit"] &&
+        [title containsString:@"photo"]) {
+        return BHTMediaActionEditPhotoIdentifier;
+    }
+    if ([title containsString:@"grok"] &&
+        ([title containsString:@"edit"] ||
+         [title containsString:@"create"] ||
+         [title containsString:@"imagine"])) {
+        return BHTMediaActionGrokEditIdentifier;
     }
     if (([title hasPrefix:@"like "] || [title hasPrefix:@"unlike "] ||
          [title isEqualToString:@"like"] ||
@@ -151,7 +246,12 @@ static NSString* BHTMediaActionInferredIdentifier(id item) {
          [title containsString:@"direct share"])) {
         return BHTMediaActionShareFileIdentifier;
     }
-    if (BHTTitleContainsEvery(title, @[@"share", @"via"]) ||
+    NSString* localizedShareVia = BHTNormalizedMediaActionTitle(
+        [[BHTBundle sharedBundle]
+            localizedTwitterStringForKey:@"SHARE_VIA_ACTION"]);
+    if ((localizedShareVia.length > 0 &&
+         [title isEqualToString:localizedShareVia]) ||
+        BHTTitleContainsEvery(title, @[@"share", @"via"]) ||
         [title containsString:@"share..."] ||
         [title isEqualToString:@"share"] ||
         [title containsString:@"more share options"]) {
@@ -188,7 +288,8 @@ NSArray* BHTMediaActionApplyPreferences(NSArray* items,
         [BHTMediaActionUtility orderedActionIdentifiersForKind:kind];
     NSSet<NSString*>* known =
         [NSSet setWithArray:
-                   [BHTMediaActionUtility canonicalActionIdentifiers]];
+                   [BHTMediaActionUtility
+                       canonicalActionIdentifiersForKind:kind]];
     NSSet<NSString*>* hidden =
         [NSSet setWithArray:
                    [BHTMediaActionUtility
@@ -275,7 +376,35 @@ NSArray* BHTMediaActionApplyPreferences(NSArray* items,
         BHTMediaActionCopyLinkIdentifier,
         BHTMediaActionReactIdentifier,
         BHTMediaActionOfflineIdentifier,
+        BHTMediaActionEditPhotoIdentifier,
+        BHTMediaActionGrokEditIdentifier,
         BHTMediaActionDownloadIdentifier,
+        BHTMediaActionShareFileIdentifier,
+        BHTMediaActionShareViaIdentifier
+    ];
+}
+
++ (NSArray<NSString*>*)canonicalActionIdentifiersForKind:
+    (BHTMediaActionKind)kind {
+    if (kind == BHTMediaActionKindPhoto) {
+        return @[
+            BHTMediaActionLikeIdentifier,
+            BHTMediaActionCopyLinkIdentifier,
+            BHTMediaActionDownloadIdentifier,
+            BHTMediaActionReactIdentifier,
+            BHTMediaActionEditPhotoIdentifier,
+            BHTMediaActionGrokEditIdentifier,
+            BHTMediaActionShareFileIdentifier,
+            BHTMediaActionShareViaIdentifier
+        ];
+    }
+    return @[
+        BHTMediaActionLikeIdentifier,
+        BHTMediaActionCopyLinkIdentifier,
+        BHTMediaActionReactIdentifier,
+        BHTMediaActionOfflineIdentifier,
+        BHTMediaActionDownloadIdentifier,
+        BHTMediaActionGrokEditIdentifier,
         BHTMediaActionShareFileIdentifier,
         BHTMediaActionShareViaIdentifier
     ];
@@ -284,50 +413,83 @@ NSArray* BHTMediaActionApplyPreferences(NSArray* items,
 + (NSArray<NSDictionary*>*)availableActionsForKind:
     (BHTMediaActionKind)kind {
     BHTBundle* bundle = [BHTBundle sharedBundle];
-    return @[
-        @{
+    NSString* tweetTitleKey =
+        kind == BHTMediaActionKindPhoto
+            ? @"MEDIA_ACTION_TWEET_PHOTO_TITLE"
+            : (kind == BHTMediaActionKindGIF
+                   ? @"MEDIA_ACTION_TWEET_GIF_TITLE"
+                   : @"MEDIA_ACTION_TWEET_VIDEO_TITLE");
+    NSString* copyTitleKey =
+        kind == BHTMediaActionKindPhoto
+            ? @"MEDIA_ACTION_COPY_PHOTO_TITLE"
+            : (kind == BHTMediaActionKindGIF
+                   ? @"MEDIA_ACTION_COPY_GIF_LINK_TITLE"
+                   : @"MEDIA_ACTION_COPY_VIDEO_LINK_TITLE");
+    NSDictionary<NSString*, NSDictionary*>* metadata = @{
+        BHTMediaActionLikeIdentifier: @{
             TabPageKey: BHTMediaActionLikeIdentifier,
             TabTitleKey:
-                [bundle localizedStringForKey:@"MEDIA_ACTION_LIKE_TITLE"],
-            TabImageKey: @"sf:heart"
+                [bundle localizedStringForKey:tweetTitleKey],
+            TabImageKey: @"sf:square.and.pencil"
         },
-        @{
+        BHTMediaActionCopyLinkIdentifier: @{
             TabPageKey: BHTMediaActionCopyLinkIdentifier,
             TabTitleKey:
-                [bundle localizedStringForKey:@"MEDIA_ACTION_COPY_LINK_TITLE"],
+                [bundle localizedStringForKey:copyTitleKey],
             TabImageKey: @"sf:link"
         },
-        @{
+        BHTMediaActionReactIdentifier: @{
             TabPageKey: BHTMediaActionReactIdentifier,
             TabTitleKey:
                 [bundle localizedStringForKey:@"MEDIA_ACTION_REACT_TITLE"],
             TabImageKey: @"sf:arrowshape.turn.up.right"
         },
-        @{
+        BHTMediaActionOfflineIdentifier: @{
             TabPageKey: BHTMediaActionOfflineIdentifier,
             TabTitleKey:
                 [bundle localizedStringForKey:@"MEDIA_ACTION_OFFLINE_TITLE"],
             TabImageKey: @"sf:arrow.down.circle"
         },
-        @{
+        BHTMediaActionEditPhotoIdentifier: @{
+            TabPageKey: BHTMediaActionEditPhotoIdentifier,
+            TabTitleKey:
+                [bundle localizedStringForKey:
+                            @"MEDIA_ACTION_EDIT_PHOTO_TITLE"],
+            TabImageKey: @"sf:pencil"
+        },
+        BHTMediaActionGrokEditIdentifier: @{
+            TabPageKey: BHTMediaActionGrokEditIdentifier,
+            TabTitleKey:
+                [bundle localizedStringForKey:
+                            @"MEDIA_ACTION_GROK_EDIT_TITLE"],
+            TabImageKey: @"sf:sparkles"
+        },
+        BHTMediaActionDownloadIdentifier: @{
             TabPageKey: BHTMediaActionDownloadIdentifier,
             TabTitleKey:
                 [bundle localizedStringForKey:@"MEDIA_ACTION_DOWNLOAD_TITLE"],
             TabImageKey: @"sf:arrow.down.to.line"
         },
-        @{
+        BHTMediaActionShareFileIdentifier: @{
             TabPageKey: BHTMediaActionShareFileIdentifier,
             TabTitleKey:
                 [bundle localizedStringForKey:@"MEDIA_ACTION_SHARE_FILE_TITLE"],
             TabImageKey: @"sf:paperplane"
         },
-        @{
+        BHTMediaActionShareViaIdentifier: @{
             TabPageKey: BHTMediaActionShareViaIdentifier,
             TabTitleKey:
                 [bundle localizedStringForKey:@"MEDIA_ACTION_SHARE_VIA_TITLE"],
             TabImageKey: @"sf:square.and.arrow.up"
         }
-    ];
+    };
+    NSMutableArray<NSDictionary*>* actions = [NSMutableArray array];
+    for (NSString* identifier in
+         [self canonicalActionIdentifiersForKind:kind]) {
+        NSDictionary* item = metadata[identifier];
+        if (item) [actions addObject:item];
+    }
+    return [actions copy];
 }
 
 + (NSDictionary*)metadataForIdentifier:(NSString*)identifier
@@ -341,8 +503,10 @@ NSArray* BHTMediaActionApplyPreferences(NSArray* items,
 }
 
 + (NSArray<NSString*>*)sanitizedIdentifiers:(NSArray*)source
-                             appendMissing:(BOOL)appendMissing {
-    NSArray<NSString*>* canonical = [self canonicalActionIdentifiers];
+                             appendMissing:(BOOL)appendMissing
+                                      kind:(BHTMediaActionKind)kind {
+    NSArray<NSString*>* canonical =
+        [self canonicalActionIdentifiersForKind:kind];
     NSSet<NSString*>* valid = [NSSet setWithArray:canonical];
     NSMutableArray<NSString*>* sanitized = [NSMutableArray array];
     for (id candidate in source) {
@@ -354,9 +518,21 @@ NSArray* BHTMediaActionApplyPreferences(NSArray* items,
     }
     if (appendMissing) {
         for (NSString* identifier in canonical) {
-            if (![sanitized containsObject:identifier]) {
-                [sanitized addObject:identifier];
+            if ([sanitized containsObject:identifier]) continue;
+            NSUInteger canonicalIndex =
+                [canonical indexOfObject:identifier];
+            NSUInteger insertionIndex = sanitized.count;
+            for (NSUInteger index = canonicalIndex + 1;
+                 index < canonical.count; index++) {
+                NSUInteger existingIndex =
+                    [sanitized indexOfObject:canonical[index]];
+                if (existingIndex != NSNotFound) {
+                    insertionIndex = existingIndex;
+                    break;
+                }
             }
+            [sanitized insertObject:identifier
+                            atIndex:insertionIndex];
         }
     }
     return [sanitized copy];
@@ -367,8 +543,10 @@ NSArray* BHTMediaActionApplyPreferences(NSArray* items,
     NSArray* saved = [[NSUserDefaults standardUserDefaults]
         arrayForKey:BHTMediaActionOrderKey(kind)];
     return [self sanitizedIdentifiers:
-                     (saved ?: [self canonicalActionIdentifiers])
-                           appendMissing:YES];
+                     (saved ?: [self
+                                   canonicalActionIdentifiersForKind:kind])
+                           appendMissing:YES
+                                    kind:kind];
 }
 
 + (NSArray<NSString*>*)hiddenActionIdentifiersForKind:
@@ -376,7 +554,8 @@ NSArray* BHTMediaActionApplyPreferences(NSArray* items,
     NSArray* saved = [[NSUserDefaults standardUserDefaults]
         arrayForKey:BHTMediaActionHiddenKey(kind)];
     return [self sanitizedIdentifiers:(saved ?: @[])
-                         appendMissing:NO];
+                         appendMissing:NO
+                                  kind:kind];
 }
 
 + (NSArray<NSString*>*)visibleActionIdentifiersForKind:
@@ -397,9 +576,13 @@ NSArray* BHTMediaActionApplyPreferences(NSArray* items,
             hiddenActionIdentifiers:(NSArray<NSString*>*)hidden
                                 kind:(BHTMediaActionKind)kind {
     NSArray<NSString*>* safeOrder =
-        [self sanitizedIdentifiers:ordered appendMissing:YES];
+        [self sanitizedIdentifiers:ordered
+                     appendMissing:YES
+                              kind:kind];
     NSArray<NSString*>* safeHidden =
-        [self sanitizedIdentifiers:hidden appendMissing:NO];
+        [self sanitizedIdentifiers:hidden
+                     appendMissing:NO
+                              kind:kind];
     NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
     [defaults setObject:safeOrder forKey:BHTMediaActionOrderKey(kind)];
     [defaults setObject:safeHidden forKey:BHTMediaActionHiddenKey(kind)];

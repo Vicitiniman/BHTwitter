@@ -297,7 +297,8 @@ static NSString* const kBHTMediaActionGridFooterID =
                                      if (!strongSelf) return;
                                      strongSelf.allActions =
                                          [[BHTMediaActionUtility
-                                             canonicalActionIdentifiers]
+                                             canonicalActionIdentifiersForKind:
+                                                 strongSelf.kind]
                                              mutableCopy];
                                      strongSelf.selectedActions =
                                          [strongSelf.allActions mutableCopy];

@@ -143,6 +143,14 @@
                              animated:(BOOL)animated;
 @end
 
+@interface TFNPreviewConfiguration : NSObject
++ (instancetype)configurationWithPreviewViewControllerBlock:
+                    (UIViewController* (^)(void))previewViewControllerBlock
+                                               actionItems:(NSArray*)actionItems
+                                                sourceView:(UIView*)sourceView
+                                                sourceRect:(CGRect)sourceRect;
+@end
+
 @interface TFNTitleView : UIView
 + (instancetype)titleViewWithTitle:(NSString*)title
                           subtitle:(NSString*)subTitle;
