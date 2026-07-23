@@ -114,7 +114,8 @@ static void BHTResetLikes(UIViewController* likes) {
     if ([media isKindOfClass:UICollectionView.class]) [media setContentOffset:CGPointMake(media.contentOffset.x, -media.adjustedContentInset.top) animated:NO];
 }
 static NSInteger BHTMediaSubindex(id item) {
-    NSArray* parts = [[BHTLValue(item, @"identifier") ?: @""] componentsSeparatedByString:@"-"];
+    NSString* identifier = BHTLValue(item, @"identifier");
+    NSArray* parts = [(identifier ?: @"") componentsSeparatedByString:@"-"];
     return parts.count > 1 ? [parts[1] integerValue] : 0;
 }
 static void BHTSortLikedMedia(UIViewController* likes) {
@@ -157,8 +158,11 @@ static BOOL BHTShowConversation(UINavigationController* navigation, long long st
 
 %hook BHTLikesViewController
 - (instancetype)init {
-    BOOL previous = BHTBuildingLikes; BHTBuildingLikes = YES;
-    id result = %orig; BHTBuildingLikes = previous; return result;
+    BOOL previous = BHTBuildingLikes;
+    BHTBuildingLikes = YES;
+    id result = %orig;
+    BHTBuildingLikes = previous;
+    return result;
 }
 - (void)ingestSections:(NSArray*)sections {
     %orig;
@@ -183,7 +187,8 @@ static BOOL BHTShowConversation(UINavigationController* navigation, long long st
 %hook T1TabbedAppNavigationViewController
 - (void)setVisibleTabEntries:(NSArray*)entries {
     NSArray* installed = BHTEntriesByInstallingLikesDestination(entries);
-    NSMutableArray* result = [NSMutableArray array]; BOOL found = NO;
+    NSMutableArray* result = [NSMutableArray array];
+    BOOL found = NO;
     for (id entry in installed) {
         T1TabView* tabView = [entry respondsToSelector:@selector(tabView)] ? [entry tabView] : nil;
         BOOL likes = [tabView.scribePage isEqualToString:BHTLikesPageID()];
@@ -203,10 +208,18 @@ static BOOL BHTShowConversation(UINavigationController* navigation, long long st
     self.bhtLikesTapGesture.cancelsTouchesInView = NO;
     BHTColorLikesIcon(self);
 }
-- (void)setIconColor:(UIColor*)color { %orig; BHTColorLikesIcon(self); }
-- (void)tintColorDidChange { %orig; BHTColorLikesIcon(self); }
+- (void)setIconColor:(UIColor*)color {
+    %orig;
+    BHTColorLikesIcon(self);
+}
+- (void)tintColorDidChange {
+    %orig;
+    BHTColorLikesIcon(self);
+}
 - (void)setSelected:(BOOL)selected {
-    BOOL wasSelected = self.selected; %orig; BHTColorLikesIcon(self);
+    BOOL wasSelected = self.selected;
+    %orig;
+    BHTColorLikesIcon(self);
     if (!selected || wasSelected || ![self.scribePage isEqualToString:BHTLikesPageID()]) return;
     UIViewController* likes = objc_getAssociatedObject(self, &kBHTLikesTabControllerKey);
     if (!likes) likes = BHTLikesControllerForEntry(objc_getAssociatedObject(self, &kBHTLikesEntryKey));
@@ -221,10 +234,24 @@ static BOOL BHTShowConversation(UINavigationController* navigation, long long st
     if (BHTLikesEnabled()) objc_setAssociatedObject(tabView, &kBHTLikesEntryKey, self, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return tabView;
 }
-- (BOOL)isExcludedFromTabBar { if (BHTLikesEnabled()) return NO; return %orig; }
-- (BOOL)isTabViewSideBarOnly { if (BHTLikesEnabled()) return NO; return %orig; }
-- (id)createContentController { id likes = BHTLikesControllerForEntry(self); if (likes) return likes; return %orig; }
-- (id)rootTabViewController { id likes = BHTLikesControllerForEntry(self); if (likes) return likes; return %orig; }
+- (BOOL)isExcludedFromTabBar {
+    if (BHTLikesEnabled()) return NO;
+    return %orig;
+}
+- (BOOL)isTabViewSideBarOnly {
+    if (BHTLikesEnabled()) return NO;
+    return %orig;
+}
+- (id)createContentController {
+    id likes = BHTLikesControllerForEntry(self);
+    if (likes) return likes;
+    return %orig;
+}
+- (id)rootTabViewController {
+    id likes = BHTLikesControllerForEntry(self);
+    if (likes) return likes;
+    return %orig;
+}
 %end
 %end
 
