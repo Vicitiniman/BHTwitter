@@ -132,14 +132,12 @@ static double BHTActivityOriginalFractionalIndex(
     if (!BHTActivityConfigurationActive(controller) || visibleIndex < 0) {
         return visibleIndex;
     }
-    NSInteger lower = floor(visibleIndex);
-    NSInteger upper = ceil(visibleIndex);
-    NSInteger mappedLower =
-        BHTActivityOriginalIndex(controller, lower);
-    NSInteger mappedUpper =
-        BHTActivityOriginalIndex(controller, upper);
-    double fraction = visibleIndex - lower;
-    return mappedLower + (mappedUpper - mappedLower) * fraction;
+    // X rounds this value before looking up its original page array. Mapping
+    // the nearest displayed page directly avoids walking through hidden
+    // intermediate native indices when the user chooses a non-linear order
+    // such as Likes, Bookmarks, Articles.
+    NSInteger nearest = (NSInteger)llround(visibleIndex);
+    return BHTActivityOriginalIndex(controller, nearest);
 }
 
 static UIViewController* BHTFindUnifiedSegmentedController(
