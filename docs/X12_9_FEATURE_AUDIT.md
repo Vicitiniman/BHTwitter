@@ -64,7 +64,7 @@ Status meanings:
 | General | `expand_tco_links` | Updated | No longer unconditional |
 | General | `show_scroll_indicator` | Ported | Typed account feature-switch accessor |
 | Appearance | theme and app icon controls | Ported | Modern settings pages and live theme reapply |
-| Appearance | custom navigation | Combined | Captures/reorders native tab entries; opt-in Likes is a movable child surface over the untouched concrete Grok root, avoiding X 12.9 Swift root-type crashes |
+| Appearance | custom navigation | Combined | Captures/reorders native tab entries; Grok remains native while opt-in Likes is an independent movable entry; selected editor tiles and the preview row both support drag reordering |
 | Appearance | `tab_bar_theming` | Ported | Native selected/unselected colors |
 | Appearance | `restore_tab_labels` | Updated | Current `T1TabView` title path |
 | Appearance | `restore_launch_animation` | Updated | No longer forced on; strips only the X reveal mask |
@@ -78,7 +78,7 @@ Status meanings:
 | Timeline | `hide_spaces` | Updated | Fleet-line visibility seam; runtime checked |
 | Timeline | `hide_custom_timelines` | Updated | Hides without persisting an empty pinned list |
 | Timeline | `remember_timeline_tab` | Updated | Disabled preference now leaves X's native value alone |
-| Timeline | `enable_likes_tab` | New/runtime check | Opt-in bottom destination backed by native Likes history; opens raw Activity History tab 4 on X 12.9 and uses normal push/swipe-back navigation |
+| Timeline | `enable_likes_tab` | New/runtime check | Independent bottom destination backed by native Likes history; opens raw Activity History tab 4 on X 12.9 and can be placed separately from Grok |
 | Timeline | `likes_media_waterfall` | New/runtime check | Newest-first native-section media extraction, continuous pagination, original photo URLs, highest-bitrate MP4 selection, 2–5 columns |
 | Grok | `enable_grok_translations` | Updated | Manual translation gates are no longer forced globally |
 | Grok | `hide_grok_analyze` | Updated | Backend switch plus current button paths |

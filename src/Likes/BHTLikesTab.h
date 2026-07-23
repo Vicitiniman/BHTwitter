@@ -1,9 +1,7 @@
 #import <UIKit/UIKit.h>
 
-// Reuses the native Grok navigation entry as an opt-in My Likes button. The
-// entry and its concrete Swift root controller stay untouched so X's tab
-// arrays, internal casts, and controller lifecycle remain valid. Likes is
-// attached as a retained child surface after the native tab is selected.
+// Adds an independent Objective-C navigation entry for My Likes. Native entries
+// (including Grok) remain untouched and can be selected/reordered separately.
 NSArray* BHTEntriesByInstallingLikesDestination(NSArray* entries);
 
 // Called by the timeline section hook while a private Likes timeline is active.

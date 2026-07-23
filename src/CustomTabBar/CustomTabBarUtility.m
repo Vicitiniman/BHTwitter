@@ -97,9 +97,9 @@ static NSString* const kLegacyHiddenKey = @"bh_tabs_hidden";
 + (NSArray<NSDictionary*>*)availableTabs {
     NSMutableArray<NSDictionary*>* tabs = [[self registry] mutableCopy];
 
-    // Older saved registries can predate the Likes replacement because the
-    // editor was opened before X emitted its Grok entry. Keep Likes available
-    // as a first-class movable item even in that case.
+    // Older saved registries can predate the standalone Likes entry. Keep it
+    // available as a first-class movable item even before the live tab capture
+    // has refreshed the registry.
     if ([BHTSettings boolForKey:@"enable_likes_tab"]) {
         NSDictionary* likes = nil;
         NSDictionary* grok = nil;
@@ -111,7 +111,7 @@ static NSString* const kLegacyHiddenKey = @"bh_tabs_hidden";
         if (!likes) {
             [tabs addObject:@{
                 TabPageKey: @"likes",
-                TabTitleKey: @"Likes",
+                TabTitleKey: @"My Likes",
                 TabImageKey: @"heart_stroke",
                 TabPanelIDKey: grok[TabPanelIDKey] ?: @(-1)
             }];

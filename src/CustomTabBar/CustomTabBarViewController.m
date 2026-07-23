@@ -5,7 +5,8 @@
 //  Modified by actuallyaridan on 31/05/2025.
 //
 //  Clones the app's native tab-customization screen: a grid of every available
-//  tab (tap to add/remove) above a drag-reorderable tab-bar preview row.
+//  tab (tap to add/remove) above a tab-bar preview row. Both the selected
+//  tiles and the preview row can be dragged to reorder the final tab bar.
 //
 
 #import "CustomTabBarViewController.h"
@@ -137,6 +138,12 @@ static NSString* const kGridFooterID = @"gridFooter";
         forSupplementaryViewOfKind:UICollectionElementKindSectionFooter
                withReuseIdentifier:kGridFooterID];
     [self.view addSubview:self.gridView];
+
+    UILongPressGestureRecognizer* longPress =
+        [[UILongPressGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(handleGridReorderGesture:)];
+    [self.gridView addGestureRecognizer:longPress];
 }
 
 - (void)setupPreviewRow {
@@ -209,12 +216,6 @@ static NSString* const kGridFooterID = @"gridFooter";
         NSNumber* panelID = entry[TabPanelIDKey];
         NSString* pageID = entry[TabPageKey];
         BOOL isLikes = [pageID isEqualToString:BHTLikesPageID()];
-        // Likes intentionally occupies Grok's native entry. Show one movable
-        // destination in the editor instead of offering both labels for the
-        // same underlying panel.
-        if (likesEnabled && [pageID isEqualToString:@"grok"]) {
-            continue;
-        }
         if (!isLikes && panelID &&
             !panelIsGenuinelyAvailable(panelID.longLongValue)) {
             continue;
@@ -237,6 +238,7 @@ static NSString* const kGridFooterID = @"gridFooter";
         }
     }
     [self pinHomeFirst];
+    [self syncGridOrderToSelectedPages];
 
     self.originalSelection = [self.selectedPages copy];
     self.hasChanges = NO;
@@ -250,6 +252,24 @@ static NSString* const kGridFooterID = @"gridFooter";
     if ([CustomTabBarUtility metadataForPage:CustomTabBarHomePageID]) {
         [self.selectedPages insertObject:CustomTabBarHomePageID atIndex:0];
     }
+}
+
+- (void)syncGridOrderToSelectedPages {
+    NSMutableArray<NSString*>* ordered = [self.selectedPages mutableCopy];
+    for (NSString* page in self.allPages) {
+        if (![ordered containsObject:page]) [ordered addObject:page];
+    }
+    self.allPages = ordered;
+}
+
+- (void)syncSelectedPagesToGridOrder {
+    NSSet<NSString*>* selected = [NSSet setWithArray:self.selectedPages];
+    NSMutableArray<NSString*>* ordered = [NSMutableArray array];
+    for (NSString* page in self.allPages) {
+        if ([selected containsObject:page]) [ordered addObject:page];
+    }
+    self.selectedPages = ordered;
+    [self pinHomeFirst];
 }
 
 - (void)recomputeChanges {
@@ -350,7 +370,36 @@ static UIViewController* findViewControllerOfClass(UIViewController* vc,
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-#pragma mark - Reordering (preview row)
+#pragma mark - Reordering
+
+- (void)handleGridReorderGesture:(UILongPressGestureRecognizer*)gesture {
+    CGPoint location = [gesture locationInView:self.gridView];
+
+    switch (gesture.state) {
+        case UIGestureRecognizerStateBegan: {
+            NSIndexPath* indexPath =
+                [self.gridView indexPathForItemAtPoint:location];
+            if (!indexPath ||
+                [self.allPages[indexPath.item]
+                    isEqualToString:CustomTabBarHomePageID]) {
+                return;
+            }
+            [self.gridView
+                beginInteractiveMovementForItemAtIndexPath:indexPath];
+            break;
+        }
+        case UIGestureRecognizerStateChanged:
+            [self.gridView
+                updateInteractiveMovementTargetPosition:location];
+            break;
+        case UIGestureRecognizerStateEnded:
+            [self.gridView endInteractiveMovement];
+            break;
+        default:
+            [self.gridView cancelInteractiveMovement];
+            break;
+    }
+}
 
 - (void)handleReorderGesture:(UILongPressGestureRecognizer*)gesture {
     CGPoint location = [gesture locationInView:self.previewView];
@@ -479,6 +528,7 @@ static UIViewController* findViewControllerOfClass(UIViewController* vc,
         [self.selectedPages removeObject:page];
     } else {
         [self.selectedPages addObject:page];
+        [self syncSelectedPagesToGridOrder];
     }
 
     [self recomputeChanges];
@@ -488,13 +538,20 @@ static UIViewController* findViewControllerOfClass(UIViewController* vc,
 
 - (BOOL)collectionView:(UICollectionView*)collectionView
     canMoveItemAtIndexPath:(NSIndexPath*)indexPath {
-    return collectionView == self.previewView && indexPath.item != 0;
+    if (collectionView == self.previewView) {
+        return indexPath.item != 0;
+    }
+    if (collectionView == self.gridView) {
+        return ![self.allPages[indexPath.item]
+            isEqualToString:CustomTabBarHomePageID];
+    }
+    return NO;
 }
 
 - (NSIndexPath*)collectionView:(UICollectionView*)collectionView
     targetIndexPathForMoveFromItemAtIndexPath:(NSIndexPath*)originalIndexPath
                           toProposedIndexPath:(NSIndexPath*)proposedIndexPath {
-    // Keep Home pinned first.
+    // Keep Home pinned first in either draggable surface.
     if (proposedIndexPath.item == 0) {
         return [NSIndexPath indexPathForItem:1 inSection:0];
     }
@@ -504,9 +561,22 @@ static UIViewController* findViewControllerOfClass(UIViewController* vc,
 - (void)collectionView:(UICollectionView*)collectionView
     moveItemAtIndexPath:(NSIndexPath*)sourceIndexPath
             toIndexPath:(NSIndexPath*)destinationIndexPath {
-    NSString* page = self.selectedPages[sourceIndexPath.item];
-    [self.selectedPages removeObjectAtIndex:sourceIndexPath.item];
-    [self.selectedPages insertObject:page atIndex:destinationIndexPath.item];
+    if (collectionView == self.gridView) {
+        NSString* page = self.allPages[sourceIndexPath.item];
+        [self.allPages removeObjectAtIndex:sourceIndexPath.item];
+        [self.allPages insertObject:page atIndex:destinationIndexPath.item];
+        [self syncSelectedPagesToGridOrder];
+        [self.previewView reloadData];
+    } else {
+        NSString* page = self.selectedPages[sourceIndexPath.item];
+        [self.selectedPages removeObjectAtIndex:sourceIndexPath.item];
+        [self.selectedPages insertObject:page
+                                 atIndex:destinationIndexPath.item];
+        [self syncGridOrderToSelectedPages];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.gridView reloadData];
+        });
+    }
     [self recomputeChanges];
 }
 
