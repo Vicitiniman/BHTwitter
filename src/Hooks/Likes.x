@@ -189,6 +189,14 @@ static void BHTApplyActivityHistoryConfiguration(
                              OBJC_ASSOCIATION_COPY_NONATOMIC);
 }
 
+static void BHTPrepareActivityHistoryConfiguration(
+    UIViewController* controller) {
+    if (!BHTIsManagedLikesActivityHistoryController(controller)) return;
+    objc_setAssociatedObject(
+        controller, &kBHTActivityConfigurationReadyKey, @YES,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 void BHTRefreshLikesActivityHistoryConfiguration(
     UIViewController* rootController) {
     if (!rootController) return;
@@ -196,6 +204,7 @@ void BHTRefreshLikesActivityHistoryConfiguration(
         @"XActivityHistory.ActivityHistoryContainerViewController");
     if (activityClass &&
         [rootController isKindOfClass:activityClass]) {
+        BHTPrepareActivityHistoryConfiguration(rootController);
         BHTApplyActivityHistoryConfiguration(rootController);
     }
     for (UIViewController* child in
@@ -317,9 +326,8 @@ void BHTRefreshLikesActivityHistoryConfiguration(
     %orig;
     if (BHTIsManagedLikesActivityHistoryController(
             (UIViewController*)self)) {
-        objc_setAssociatedObject(
-            self, &kBHTActivityConfigurationReadyKey, @YES,
-            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        BHTPrepareActivityHistoryConfiguration(
+            (UIViewController*)self);
         __weak UIViewController* weakController =
             (UIViewController*)self;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -330,6 +338,7 @@ void BHTRefreshLikesActivityHistoryConfiguration(
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig(animated);
+    BHTPrepareActivityHistoryConfiguration((UIViewController*)self);
     BHTApplyActivityHistoryConfiguration((UIViewController*)self);
 }
 

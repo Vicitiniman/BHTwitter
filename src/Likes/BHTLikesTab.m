@@ -23,6 +23,7 @@ static char kBHTOriginalNativePageKey;
 static char kBHTNativeLikesNavigationMarkerKey;
 static char kBHTNativeLikesControllerKey;
 static char kBHTNativeLikesNavigationKey;
+static char kBHTNativeLikesTabViewKey;
 static char kBHTInitialResetPanMarkerKey;
 static const long long kBHTLikesPanelID = 6; // X 12.9 Bookmarks panel
 static const uintptr_t kBHTX129EntryFactoryOffset = 0x6CAFE8;
@@ -1372,6 +1373,8 @@ static void BHTConfigureNativeLikesEntry(id entry, BOOL injected) {
 
 static void BHTRestoreNativeEntryPage(id entry) {
     T1TabView* tabView = BHTCallObject(entry, @"tabView");
+    UIViewController* navigation =
+        objc_getAssociatedObject(tabView, &kBHTNativeLikesNavigationKey);
     NSString* original =
         objc_getAssociatedObject(tabView, &kBHTOriginalNativePageKey);
     if (original.length > 0) tabView.scribePage = original;
@@ -1379,6 +1382,11 @@ static void BHTRestoreNativeEntryPage(id entry) {
                              OBJC_ASSOCIATION_ASSIGN);
     objc_setAssociatedObject(tabView, &kBHTNativeLikesNavigationKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (navigation) {
+        objc_setAssociatedObject(navigation,
+                                 &kBHTNativeLikesTabViewKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     objc_setAssociatedObject(entry, &kBHTNativeLikesEntryMarkerKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -1410,6 +1418,9 @@ void BHTConnectNativeLikesNavigationController(
     BHTMarkNativeLikesNavigationController(controller);
     objc_setAssociatedObject(tabView, &kBHTNativeLikesNavigationKey,
                              controller,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(controller, &kBHTNativeLikesTabViewKey,
+                             tabView,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
@@ -1475,6 +1486,12 @@ void BHTInstallNativeLikesNavigationController(
     }
 
     if (resetToNewest) [likes resetToNewest];
+    T1TabView* tabView =
+        objc_getAssociatedObject(navigation,
+                                 &kBHTNativeLikesTabViewKey);
+    if (tabView.isSelected) {
+        [likes activateForFirstPresentation];
+    }
 }
 
 static void BHTActivateLikesTabViewNow(T1TabView* view) {
