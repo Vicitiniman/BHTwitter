@@ -49,8 +49,8 @@ static NSString* scribePageForEntry(id<T1AppNavigationTabEntry> entry) {
 // Operates on the tab ENTRIES, not the button views: the app derives both the
 // buttons and their content view controllers from this one array.
 static NSArray* orderedTabEntries(NSArray* entries) {
-    BHTRecordNavigationEntryClasses(entries);
     entries = BHTEntriesByInstallingLikesDestination(entries);
+    BHTRecordNavigationEntryClasses(entries);
 
     // Record the underlying tab views so the editor can show real titles and icons.
     NSMutableArray* tabViews = [NSMutableArray new];
@@ -69,20 +69,15 @@ static NSArray* orderedTabEntries(NSArray* entries) {
         [(savedVisibleOrder ?: [CustomTabBarUtility defaultVisiblePageIDs])
             mutableCopy];
     BOOL likesEnabled = [BHTSettings boolForKey:@"enable_likes_tab"];
-    NSUInteger grokIndex = [visibleOrder indexOfObject:@"grok"];
     NSUInteger likesIndex = [visibleOrder indexOfObject:BHTLikesPageID()];
     if (likesEnabled) {
-        if (grokIndex != NSNotFound) {
-            if (likesIndex == NSNotFound) {
-                visibleOrder[grokIndex] = BHTLikesPageID();
-            } else {
-                [visibleOrder removeObjectAtIndex:grokIndex];
-            }
-        } else if (!hasCustomOrder && likesIndex == NSNotFound) {
+        // Likes is its own entry. Keep Grok exactly where the user placed it
+        // and add Likes to the default layout without replacing any native tab.
+        if (!hasCustomOrder && likesIndex == NSNotFound) {
             [visibleOrder addObject:BHTLikesPageID()];
         }
     } else if (likesIndex != NSNotFound) {
-        visibleOrder[likesIndex] = @"grok";
+        [visibleOrder removeObjectAtIndex:likesIndex];
     }
 
     NSMutableDictionary<NSString*, id>* entriesByPage = [NSMutableDictionary new];

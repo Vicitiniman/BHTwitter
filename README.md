@@ -11,8 +11,9 @@ X 12.9.
 - Highest-quality photo loading, optional full-frame timeline media, and a
   highest-video preference.
 - Modern video/GIF downloads, including supported Direct Message videos.
-- Native tab reordering plus an opt-in, movable **My Likes** bottom destination
-  with normal in-tab navigation and swipe-back.
+- Native tab reordering plus an independent, movable **My Likes** bottom
+  destination that can sit alongside Grok, with normal in-tab navigation and
+  swipe-back.
 - A Posts/Media view for Likes with a pinch-adjustable waterfall gallery,
   newest-first loading, continuous pagination, original-quality photo viewing,
   and highest-available MP4 playback.

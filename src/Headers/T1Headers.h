@@ -77,6 +77,10 @@
 @property (readonly, nonatomic) NSString* imageName;
 @property (retain, nonatomic) UIColor* iconColor;
 @property (readonly, nonatomic, getter=isSelected) BOOL selected;
+- (instancetype)initWithFrame:(CGRect)frame
+                         title:(NSString*)title
+                     imageName:(NSString*)imageName
+                       panelID:(long long)panelID;
 - (void)_t1_updateTitleLabel;
 - (void)_t1_updateImageViewAnimated:(BOOL)animated;
 @end
@@ -91,6 +95,10 @@
 // buttons and their content view controllers from this single array.
 @protocol T1AppNavigationTabEntry <NSObject>
 - (T1TabView*)tabView;
+- (long long)panelID;
+- (UIViewController*)rootTabViewController;
+- (BOOL)isExcludedFromTabBar;
+- (BOOL)isTabViewSideBarOnly;
 @end
 
 @interface T1TabbedAppNavigationViewController : UIViewController
