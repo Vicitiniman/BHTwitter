@@ -204,15 +204,22 @@ static NSString* const kGridFooterID = @"gridFooter";
     // Offer the captured tabs the account genuinely has; panels that only exist
     // because of the tweak's forced gates stay out of the grid.
     self.allPages = [NSMutableArray array];
+    BOOL likesEnabled = [BHTSettings boolForKey:@"enable_likes_tab"];
     for (NSDictionary* entry in [CustomTabBarUtility availableTabs]) {
         NSNumber* panelID = entry[TabPanelIDKey];
         NSString* pageID = entry[TabPageKey];
         BOOL isLikes = [pageID isEqualToString:BHTLikesPageID()];
+        // Likes intentionally occupies Grok's native entry. Show one movable
+        // destination in the editor instead of offering both labels for the
+        // same underlying panel.
+        if (likesEnabled && [pageID isEqualToString:@"grok"]) {
+            continue;
+        }
         if (!isLikes && panelID &&
             !panelIsGenuinelyAvailable(panelID.longLongValue)) {
             continue;
         }
-        if (isLikes && ![BHTSettings boolForKey:@"enable_likes_tab"]) {
+        if (isLikes && !likesEnabled) {
             continue;
         }
         [self.allPages addObject:pageID];

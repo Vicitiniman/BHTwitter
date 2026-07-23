@@ -1,5 +1,6 @@
 #import "Compatibility/BHTCompatibilityReporter.h"
 #import "Core/BHTSettings.h"
+#import "Likes/BHTLikesTab.h"
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -215,6 +216,7 @@ static NSArray* BHTRuntimeProbes(void) {
         BHTProbe(@"images", @"T1StandardStatusAttachmentViewAdapter", @"displayType", NO),
         BHTProbe(@"images", @"TFNTwitterAccount", @"isLoadingHighestQualityImageVariantPermitted", NO),
         BHTProbe(@"images", @"TFNTwitterAccount", @"photoUploadHighQualityImagesSettingIsVisible", NO),
+        BHTProbe(@"images", @"TFNTwitterAccount", @"isDoubleMaxZoomFor4KImagesEnabled", NO),
         BHTProbe(@"video", @"TFSTwitterEntityMediaVideoInfo", @"variants", NO),
         BHTProbe(@"video", @"TFSTwitterEntityMediaVideoInfo", @"primaryUrl", NO),
         BHTProbe(@"video", @"T1VideoDownloadViewModel", @"init", NO),
@@ -231,6 +233,8 @@ static NSArray* BHTRuntimeProbes(void) {
         BHTProbe(@"likes", @"T1TabbedAppNavigationViewController", @"setVisibleTabEntries:", NO),
         BHTProbe(@"likes", @"T1TabbedAppNavigationViewController", @"recalculateVisiblePanels", NO),
         BHTProbe(@"likes", @"T1TabView", @"scribePage", NO),
+        BHTProbe(@"likes", @"T1TabView", @"setSelected:", NO),
+        BHTProbe(@"likes", @"T1TwitterSwift.GrokAppNavigationTabEntry", @"rootTabViewController", NO),
 
         BHTProbe(@"sourceLabels", @"TFNTwitterStatus", @"composerSource", NO),
         BHTProbe(@"sourceLabels", @"T1ConversationFooterTextView", @"updateFooterTextView", NO),
@@ -365,6 +369,7 @@ void BHTWriteCompatibilityReport(void) {
         },
         @"features": featureSummary,
         @"settings": BHTSettingsSnapshot(),
+        @"likesRuntime": BHTLikesDiagnosticsSnapshot(),
         @"navigationEntryClasses": BHTNavigationEntryClasses ?: @[],
         @"navigationMethods": BHTNavigationMethodSnapshot(),
         @"timelineItemObservations": BHTTimelineObservationSnapshot(),

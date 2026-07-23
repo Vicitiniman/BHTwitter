@@ -64,7 +64,7 @@ Status meanings:
 | General | `expand_tco_links` | Updated | No longer unconditional |
 | General | `show_scroll_indicator` | Ported | Typed account feature-switch accessor |
 | Appearance | theme and app icon controls | Ported | Modern settings pages and live theme reapply |
-| Appearance | custom navigation | Combined | Captures/reorders native tab entries; opt-in Likes uses the Grok carrier |
+| Appearance | custom navigation | Combined | Captures/reorders native tab entries; opt-in Likes is a movable native-root replacement for the Grok carrier |
 | Appearance | `tab_bar_theming` | Ported | Native selected/unselected colors |
 | Appearance | `restore_tab_labels` | Updated | Current `T1TabView` title path |
 | Appearance | `restore_launch_animation` | Updated | No longer forced on; strips only the X reveal mask |
@@ -78,8 +78,8 @@ Status meanings:
 | Timeline | `hide_spaces` | Updated | Fleet-line visibility seam; runtime checked |
 | Timeline | `hide_custom_timelines` | Updated | Hides without persisting an empty pinned list |
 | Timeline | `remember_timeline_tab` | Updated | Disabled preference now leaves X's native value alone |
-| Timeline | `enable_likes_tab` | New | Opt-in bottom destination backed by native Likes history |
-| Timeline | `likes_media_waterfall` | New/runtime check | Native-section media extraction, pagination trigger, 2–5 columns |
+| Timeline | `enable_likes_tab` | New/runtime check | Opt-in bottom destination backed by native Likes history; opens raw Activity History tab 4 on X 12.9 and uses normal push/swipe-back navigation |
+| Timeline | `likes_media_waterfall` | New/runtime check | Newest-first native-section media extraction, continuous pagination, original photo URLs, highest-bitrate MP4 selection, 2–5 columns |
 | Grok | `enable_grok_translations` | Updated | Manual translation gates are no longer forced globally |
 | Grok | `hide_grok_analyze` | Updated | Backend switch plus current button paths |
 | Grok | `hide_grok_sidebar` | Ported | Current navigation model filtering |
@@ -166,7 +166,9 @@ The JSON is also written to:
 
 `Library/Caches/BHTwitter-X12.9-Compatibility.json`
 
-The first device pass should focus on the native Likes factory/tab carrier, DM
+The first device pass should focus on the native Likes root and post route, DM
 save-action plugin, Home/Spaces Swift aliases, source-label model access, and
-highest-video preference. Missing private selectors degrade to native behavior
-and are listed in the report rather than being guessed silently.
+highest-video preference. The report's privacy-safe `likesRuntime` section
+records root creation, selection/reset counts, media count, and URL acceptance.
+Missing private selectors degrade to native behavior and are listed in the
+report rather than being guessed silently.

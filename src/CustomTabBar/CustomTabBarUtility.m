@@ -6,6 +6,7 @@
 //
 
 #import "CustomTabBarUtility.h"
+#import "Core/BHTSettings.h"
 #import "Headers/T1Headers.h"
 
 // The Home tab is the app's landing surface, so it is always kept visible,
@@ -94,11 +95,33 @@ static NSString* const kLegacyHiddenKey = @"bh_tabs_hidden";
 }
 
 + (NSArray<NSDictionary*>*)availableTabs {
-    return [[self registry] copy];
+    NSMutableArray<NSDictionary*>* tabs = [[self registry] mutableCopy];
+
+    // Older saved registries can predate the Likes replacement because the
+    // editor was opened before X emitted its Grok entry. Keep Likes available
+    // as a first-class movable item even in that case.
+    if ([BHTSettings boolForKey:@"enable_likes_tab"]) {
+        NSDictionary* likes = nil;
+        NSDictionary* grok = nil;
+        for (NSDictionary* entry in tabs) {
+            NSString* page = entry[TabPageKey];
+            if ([page isEqualToString:@"likes"]) likes = entry;
+            if ([page isEqualToString:@"grok"]) grok = entry;
+        }
+        if (!likes) {
+            [tabs addObject:@{
+                TabPageKey: @"likes",
+                TabTitleKey: @"Likes",
+                TabImageKey: @"heart_stroke",
+                TabPanelIDKey: grok[TabPanelIDKey] ?: @(-1)
+            }];
+        }
+    }
+    return [tabs copy];
 }
 
 + (NSDictionary*)metadataForPage:(NSString*)pageID {
-    for (NSDictionary* entry in [self registry]) {
+    for (NSDictionary* entry in [self availableTabs]) {
         if ([entry[TabPageKey] isEqualToString:pageID]) {
             return entry;
         }

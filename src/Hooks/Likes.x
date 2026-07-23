@@ -16,7 +16,10 @@ static UIImage* BHTLikesHeartImage(BOOL selected) {
                                                         weight:UIImageSymbolWeightRegular];
     UIImage* image = [UIImage systemImageNamed:selected ? @"heart.fill" : @"heart"
                               withConfiguration:configuration];
-    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    UIColor* color = selected ? CurrentAccentColor()
+                              : UIColor.secondaryLabelColor;
+    return [[image imageWithTintColor:color]
+        imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
 }
 
 static void BHTFindLargestImageView(UIView* root, UIImageView** best,
@@ -81,17 +84,13 @@ static void BHTApplyLikesHeartToNativeBar(T1TabBarViewController* controller) {
     }
 }
 
-@interface T1TabView (BHTLikesTap)
-@property(nonatomic, strong) UITapGestureRecognizer* bhtLikesTapGesture;
-@end
-
 // Capture the native private Likes timeline after the ad/timeline filters have
 // done their work.  The native controller remains responsible for pagination.
 %hook TFNItemsDataViewController
 
 - (void)setSections:(NSArray*)sections restoreScrollPosition:(BOOL)restoreScrollPosition {
-    BHTCaptureLikesSections((UIViewController*)self, sections);
-    %orig;
+    BOOL isLikes = BHTCaptureLikesSections((UIViewController*)self, sections);
+    %orig(sections, isLikes ? NO : restoreScrollPosition);
 }
 
 - (void)updateSections:(NSArray*)sections
@@ -105,8 +104,6 @@ static void BHTApplyLikesHeartToNativeBar(T1TabBarViewController* controller) {
 %end
 
 %hook T1TabView
-
-%property(nonatomic, strong) UITapGestureRecognizer* bhtLikesTapGesture;
 
 - (NSString*)title {
     return [self.scribePage isEqualToString:BHTLikesPageID()] ? @"My Likes" : %orig;
@@ -129,51 +126,18 @@ static void BHTApplyLikesHeartToNativeBar(T1TabBarViewController* controller) {
 }
 
 - (void)setSelected:(BOOL)selected {
+    BOOL wasSelected = self.selected;
     %orig;
     BHTApplyLikesHeartToTab(self);
+    if (selected && !wasSelected &&
+        [self.scribePage isEqualToString:BHTLikesPageID()]) {
+        BHTActivateLikesTabView(self);
+    }
 }
 
 - (void)layoutSubviews {
     %orig;
-    BOOL isLikes = [self.scribePage isEqualToString:BHTLikesPageID()] &&
-                   [BHTSettings boolForKey:@"enable_likes_tab"];
-    if (!self.bhtLikesTapGesture) {
-        UITapGestureRecognizer* tap = [[UITapGestureRecognizer alloc]
-            initWithTarget:self
-                    action:@selector(bht_openLikes:)];
-        tap.cancelsTouchesInView = YES;
-        tap.delaysTouchesEnded = YES;
-        tap.enabled = NO;
-        [self addGestureRecognizer:tap];
-        self.bhtLikesTapGesture = tap;
-    }
-
-    self.bhtLikesTapGesture.enabled = isLikes;
-    if (!isLikes) return;
-
-    // The Likes destination reuses X's Grok entry for its visual slot. X may
-    // select that entry with a recognizer on either T1TabView or an ancestor.
-    // Make every native tap recognizer wait for ours; ours succeeds on the
-    // Likes slot, cancelling the underlying Grok selection before presenting
-    // the native Likes controller.
-    self.userInteractionEnabled = YES;
     BHTApplyLikesHeartToTab(self);
-    UIView* current = self;
-    for (NSUInteger depth = 0; current && depth < 4;
-         depth++, current = current.superview) {
-        for (UIGestureRecognizer* recognizer in current.gestureRecognizers) {
-            if (recognizer != self.bhtLikesTapGesture &&
-                [recognizer isKindOfClass:UITapGestureRecognizer.class]) {
-                [recognizer requireGestureRecognizerToFail:
-                                self.bhtLikesTapGesture];
-            }
-        }
-    }
-}
-
-%new
-- (void)bht_openLikes:(id)sender {
-    BHTPresentLikesFromView(self);
 }
 
 %end
