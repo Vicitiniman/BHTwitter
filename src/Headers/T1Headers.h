@@ -227,12 +227,21 @@
     UIContextMenuInteractionDelegate>
 @end
 
-// Shared media view (TweetMediaAttachments.MultiMediaView); its carousel
-// variant exposes -inlineMediaInfos as well
+// Shared componentized media views. MultiMediaCarouselView is a separate class,
+// not a MultiMediaView subclass, but both expose -inlineMediaInfos.
 @interface _TtC21TweetMediaAttachments14MultiMediaView : UIView
 @property (nonatomic, readonly) NSArray* inlineMediaInfos;
 @property (nonatomic, strong) UILongPressGestureRecognizer* bhtDownloadLongPress;
 @property (nonatomic, strong) DownloadInlineButton* bhtDownloadHandler;
+@end
+
+@interface _TtC21TweetMediaAttachments22MultiMediaCarouselView : UIView
+@property (nonatomic, readonly) NSArray* inlineMediaInfos;
+@end
+
+// X 12.9 can still use the legacy inline player for timeline VOD, depending on
+// the post and feature switches.
+@interface T1InlineMediaView : UIView
 @end
 
 // X 12.9 routes its native Blue-only video action through this model. NeoFreeBird

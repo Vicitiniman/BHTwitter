@@ -852,15 +852,11 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
 @property(nonatomic) BOOL hasBeenActivated;
 @property(nonatomic) NSUInteger initialResetGeneration;
 @property(nonatomic) NSUInteger loadRequestGeneration;
-@property(nonatomic, strong) UIView* initialResetCover;
-@property(nonatomic, strong) UIActivityIndicatorView* initialResetSpinner;
 - (void)ingestSections:(NSArray*)sections;
 - (void)loadMoreMedia;
 - (void)resetToNewest;
 - (void)activateForFirstPresentation;
 - (void)configureWaterfallInterface;
-- (void)installInitialResetCoverIfNeeded;
-- (void)finishInitialResetCover;
 @end
 
 static void BHTFindVerticalScrollView(UIView* view, UIScrollView** best,
@@ -930,7 +926,6 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
     }
 
     [self configureWaterfallInterface];
-    [self installInitialResetCoverIfNeeded];
 }
 
 - (void)likesNavigationSettingsChanged:(NSNotification*)notification {
@@ -985,53 +980,13 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
         }
         self.selector = nil;
     }
-    if (self.initialResetCover) {
-        [self.view bringSubviewToFront:self.initialResetCover];
-    }
 }
 
-- (void)installInitialResetCoverIfNeeded {
-    if (!self.needsInitialTopReset || self.initialResetCover) return;
-
-    UIView* cover = [[UIView alloc] initWithFrame:self.view.bounds];
-    cover.autoresizingMask =
-        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    cover.backgroundColor = UIColor.systemBackgroundColor;
-    cover.accessibilityLabel = [[BHTBundle sharedBundle]
-        localizedStringForKey:@"LIKES_INITIAL_LOADING_LABEL"];
-
-    UIActivityIndicatorView* spinner = [[UIActivityIndicatorView alloc]
-        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-    spinner.translatesAutoresizingMaskIntoConstraints = NO;
-    [spinner startAnimating];
-    [cover addSubview:spinner];
-    [NSLayoutConstraint activateConstraints:@[
-        [spinner.centerXAnchor constraintEqualToAnchor:cover.centerXAnchor],
-        [spinner.centerYAnchor constraintEqualToAnchor:cover.centerYAnchor]
-    ]];
-
-    self.initialResetCover = cover;
-    self.initialResetSpinner = spinner;
-    [self.view addSubview:cover];
-}
-
-- (void)finishInitialResetCover {
-    UIView* cover = self.initialResetCover;
-    if (!cover) return;
-    self.initialResetCover = nil;
-    self.initialResetSpinner = nil;
-    [UIView animateWithDuration:0.16
-        animations:^{
-            cover.alpha = 0;
-        }
-        completion:^(__unused BOOL finished) {
-            [cover removeFromSuperview];
-        }];
-}
-
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-    if (!self.hasBeenActivated || !self.needsInitialTopReset) return;
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // Reset before UIKit presents the first Likes frame. This keeps X's
+    // restored middle position off-screen without an artificial loading view.
+    if (!self.needsInitialTopReset) return;
     [self activateForFirstPresentation];
 }
 
@@ -1067,7 +1022,6 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
         BOOL userInteracting =
             nativeScroll &&
             (nativeScroll.dragging || nativeScroll.tracking ||
-             nativeScroll.decelerating ||
              nativeScroll.panGestureRecognizer.state ==
                  UIGestureRecognizerStateBegan ||
              nativeScroll.panGestureRecognizer.state ==
@@ -1099,31 +1053,20 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
                                              animated:NO];
         }
     };
-    NSArray<NSNumber*>* delays = @[@0, @100, @350, @800, @1500];
+    // Apply the first offset synchronously so the restored middle position
+    // never reaches the screen. A few short retries cover Activity History's
+    // immediate layout churn without holding a spinner over the timeline or
+    // changing the position after the user has started reading.
+    resetOffsets();
+    NSArray<NSNumber*>* delays = @[@50, @150, @300];
     for (NSNumber* delay in delays) {
         dispatch_after(
             dispatch_time(DISPATCH_TIME_NOW,
                           delay.longLongValue * NSEC_PER_MSEC),
             dispatch_get_main_queue(), ^{
                 resetOffsets();
-                // Keep Activity History's restored middle position completely
-                // covered during its delayed layout passes. Reveal only after
-                // the final top reset, so the first frame the user sees is the
-                // newest Like; later tab switches never install this cover.
-                typeof(self) strongSelf = weakSelf;
-                if (delay == delays.lastObject && strongSelf &&
-                    strongSelf.initialResetGeneration == generation) {
-                    [strongSelf finishInitialResetCover];
-                }
             });
     }
-    dispatch_after(
-        dispatch_time(DISPATCH_TIME_NOW, 2200 * NSEC_PER_MSEC),
-        dispatch_get_main_queue(), ^{
-            // Never leave the loading cover stranded if X reports an internal
-            // deceleration while restoring its private scroll view.
-            [weakSelf finishInitialResetCover];
-        });
 }
 
 - (void)cancelInitialResetFromPan:(UIPanGestureRecognizer*)pan {

@@ -49,6 +49,41 @@ static UIViewController* TopMostController(void) {
     return top;
 }
 
+static BOOL BHTMediaLooksLikeGIF(TFSTwitterEntityMedia* media) {
+    if (media.mediaType == 2) {
+        return YES;
+    }
+    for (TFSTwitterEntityMediaVideoVariant* variant in
+         media.videoInfo.variants) {
+        if ([variant.url containsString:@"/tweet_video/"]) {
+            return YES;
+        }
+    }
+    return [media.videoInfo.primaryUrl containsString:@"/tweet_video/"];
+}
+
+static BOOL BHTVariantIsMP4(TFSTwitterEntityMediaVideoVariant* variant) {
+    NSString* contentType = variant.contentType.lowercaseString;
+    if ([contentType hasPrefix:@"video/mp4"]) {
+        return YES;
+    }
+    NSURL* url = variant.url.length > 0
+                     ? [NSURL URLWithString:variant.url]
+                     : nil;
+    return [url.pathExtension.lowercaseString isEqualToString:@"mp4"];
+}
+
+static BOOL BHTVariantIsHLS(TFSTwitterEntityMediaVideoVariant* variant) {
+    NSString* contentType = variant.contentType.lowercaseString;
+    if ([contentType containsString:@"mpegurl"]) {
+        return YES;
+    }
+    NSURL* url = variant.url.length > 0
+                     ? [NSURL URLWithString:variant.url]
+                     : nil;
+    return [url.pathExtension.lowercaseString isEqualToString:@"m3u8"];
+}
+
 #pragma mark - DownloadInlineButton
 @interface DownloadInlineButton ()
 @property (nonatomic, strong) TFNHUD* hud;
@@ -72,6 +107,7 @@ static UIViewController* TopMostController(void) {
                  activeRanges:nil];
 
         void (^showHUD)(NSString*) = ^(NSString* text) {
+            [self.hud hide];
             self.hud = [[objc_getClass("TFNHUD") alloc] initWithText:text];
             [self.hud show];
         };
@@ -79,14 +115,116 @@ static UIViewController* TopMostController(void) {
             [self.hud hide];
         };
 
-        // Every download runs through FFmpeg: plain mp4s are stream-copied,
-        // GIFs are palette-encoded, HLS-only resolutions are re-encoded with
-        // VideoToolbox. The output path is appended to args; progress comes
-        // from the processed time measured against the probed duration.
         NSString* downloadingText = [[BHTBundle sharedBundle]
             localizedTwitterStringForKey:@"DOWNLOAD_LIVE_ACTIVITY_DOWNLOADING"];
-        void (^ffmpegDownload)(NSString*, NSString*, double) = ^(
-            NSString* args, NSString* ext, double durationMs) {
+
+        void (^presentError)(NSString*) = ^(NSString* message) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                dismissHUD();
+                UINotificationFeedbackGenerator* feedback =
+                    [UINotificationFeedbackGenerator new];
+                [feedback prepare];
+                [feedback notificationOccurred:UINotificationFeedbackTypeError];
+
+                UIAlertController* alert = [UIAlertController
+                    alertControllerWithTitle:
+                        [[BHTBundle sharedBundle]
+                            localizedTwitterStringForKey:@"ERROR_ALERT_TITLE"]
+                                     message:message.length > 0
+                                                 ? message
+                                                 : [[BHTBundle sharedBundle]
+                                                       localizedStringForKey:
+                                                           @"UNKNOWN_ERROR"]
+                              preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:
+                           [UIAlertAction
+                               actionWithTitle:[[BHTBundle sharedBundle]
+                                                   localizedTwitterStringForKey:
+                                                       @"OK_ACTION_LABEL"]
+                                         style:UIAlertActionStyleDefault
+                                       handler:nil]];
+                [TopMostController() presentViewController:alert
+                                                  animated:YES
+                                                completion:nil];
+            });
+        };
+
+        void (^finishFile)(NSURL*, NSString*) =
+            ^(NSURL* outFile, NSString* ext) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    dismissHUD();
+                    UINotificationFeedbackGenerator* feedback =
+                        [UINotificationFeedbackGenerator new];
+                    [feedback prepare];
+
+                    if (![BHTSettings boolForKey:@"direct_save"]) {
+                        [BHTManager showSaveVC:outFile];
+                    } else {
+                        [feedback
+                            notificationOccurred:UINotificationFeedbackTypeSuccess];
+                        if ([ext isEqualToString:@"gif"])
+                            [BHTManager saveGIF:outFile];
+                        else
+                            [BHTManager save:outFile];
+                    }
+                });
+            };
+
+        // Direct MP4 variants do not need transcoding. NSURLSession is more
+        // reliable for X's signed CDN URLs and avoids making an otherwise valid
+        // download depend on FFmpeg's HTTPS command parser.
+        void (^downloadMP4)(NSURL*) = ^(NSURL* url) {
+            showHUD(downloadingText);
+            NSURL* outFile = [[NSURL fileURLWithPath:NSTemporaryDirectory()]
+                URLByAppendingPathComponent:[NSString
+                                                stringWithFormat:@"%@.%@",
+                                                                 NSUUID.UUID
+                                                                     .UUIDString,
+                                                                 @"mp4"]];
+            NSURLSessionDownloadTask* task =
+                [[NSURLSession sharedSession]
+                    downloadTaskWithURL:url
+                     completionHandler:^(NSURL* location,
+                                         NSURLResponse* response,
+                                         NSError* error) {
+                         if (error || !location) {
+                             presentError(error.localizedDescription);
+                             return;
+                         }
+                         if ([response isKindOfClass:NSHTTPURLResponse.class] &&
+                             !NSLocationInRange(
+                                 ((NSHTTPURLResponse*)response).statusCode,
+                                 NSMakeRange(200, 100))) {
+                             NSInteger statusCode =
+                                 ((NSHTTPURLResponse*)response).statusCode;
+                             presentError([NSString
+                                 stringWithFormat:@"Download failed (HTTP %ld: %@).",
+                                                  (long)statusCode,
+                                                  [NSHTTPURLResponse
+                                                      localizedStringForStatusCode:
+                                                          statusCode]]);
+                             return;
+                         }
+
+                         NSError* moveError = nil;
+                         [[NSFileManager defaultManager]
+                             moveItemAtURL:location
+                                    toURL:outFile
+                                    error:&moveError];
+                         if (moveError) {
+                             presentError(moveError.localizedDescription);
+                             return;
+                         }
+                         finishFile(outFile, @"mp4");
+                     }];
+            [task resume];
+        };
+
+        // Use FFmpeg's argument-array API so signed URLs and filter graphs are
+        // never split or re-tokenized. cleanupFile is removed after conversion.
+        void (^ffmpegDownload)(NSArray<NSString*>*, NSString*, double, NSURL*) =
+            ^(NSArray<NSString*>* args, NSString* ext, double durationMs,
+              NSURL* cleanupFile) {
             showHUD(downloadingText);
             NSURL* outFile = [[NSURL fileURLWithPath:NSTemporaryDirectory()]
                 URLByAppendingPathComponent:[NSString
@@ -94,47 +232,25 @@ static UIViewController* TopMostController(void) {
                                                                  NSUUID.UUID
                                                                      .UUIDString,
                                                                  ext]];
+            NSMutableArray<NSString*>* command = [NSMutableArray arrayWithArray:@[
+                @"-y", @"-nostdin", @"-hide_banner", @"-loglevel", @"error"
+            ]];
+            [command addObjectsFromArray:args];
+            [command addObject:outFile.path];
             [FFmpegKit
-                executeAsync:[NSString stringWithFormat:@"%@ %@", args, outFile.path]
+                executeWithArgumentsAsync:command
                 withCompleteCallback:^(FFmpegSession* session) {
                     ReturnCode* returnCode = [session getReturnCode];
+                    if (cleanupFile) {
+                        [[NSFileManager defaultManager]
+                            removeItemAtURL:cleanupFile
+                                     error:nil];
+                    }
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        dismissHUD();
-                        UINotificationFeedbackGenerator* feedback =
-                            [UINotificationFeedbackGenerator new];
-                        [feedback prepare];
-
                         if ([ReturnCode isSuccess:returnCode]) {
-                            if (![BHTSettings boolForKey:@"direct_save"]) {
-                                [BHTManager showSaveVC:outFile];
-                            } else {
-                                [feedback
-                                    notificationOccurred:UINotificationFeedbackTypeSuccess];
-                                if ([ext isEqualToString:@"gif"])
-                                    [BHTManager saveGIF:outFile];
-                                else
-                                    [BHTManager save:outFile];
-                            }
+                            finishFile(outFile, ext);
                         } else {
-                            [feedback notificationOccurred:UINotificationFeedbackTypeError];
-                            UIAlertController* alert = [UIAlertController
-                                alertControllerWithTitle:
-                                    [[BHTBundle sharedBundle]
-                                        localizedTwitterStringForKey:@"ERROR_ALERT_TITLE"]
-                                                 message:[[BHTBundle sharedBundle]
-                                                             localizedStringForKey:
-                                                                 @"UNKNOWN_ERROR"]
-                                          preferredStyle:UIAlertControllerStyleAlert];
-                            [alert addAction:
-                                       [UIAlertAction
-                                           actionWithTitle:[[BHTBundle sharedBundle]
-                                                               localizedTwitterStringForKey:
-                                                                   @"OK_ACTION_LABEL"]
-                                                     style:UIAlertActionStyleDefault
-                                                   handler:nil]];
-                            [TopMostController() presentViewController:alert
-                                                              animated:YES
-                                                            completion:nil];
+                            presentError(nil);
                         }
                     });
                 }
@@ -160,6 +276,70 @@ static UIViewController* TopMostController(void) {
                 }];
         };
 
+        // X serves animated GIF posts as MP4 loops. Fetch the source with the
+        // native networking stack first, then feed FFmpeg a local path for the
+        // palette conversion.
+        void (^downloadGIF)(NSURL*, double) =
+            ^(NSURL* url, double durationMs) {
+                showHUD(downloadingText);
+                NSURL* inputFile =
+                    [[NSURL fileURLWithPath:NSTemporaryDirectory()]
+                        URLByAppendingPathComponent:[NSString
+                                                        stringWithFormat:
+                                                            @"%@-source.mp4",
+                                                            NSUUID.UUID
+                                                                .UUIDString]];
+                NSURLSessionDownloadTask* task =
+                    [[NSURLSession sharedSession]
+                        downloadTaskWithURL:url
+                         completionHandler:^(NSURL* location,
+                                             NSURLResponse* response,
+                                             NSError* error) {
+                             if (error || !location) {
+                                 presentError(error.localizedDescription);
+                                 return;
+                             }
+                             if ([response
+                                     isKindOfClass:NSHTTPURLResponse.class] &&
+                                 !NSLocationInRange(
+                                     ((NSHTTPURLResponse*)response).statusCode,
+                                     NSMakeRange(200, 100))) {
+                                 NSInteger statusCode =
+                                     ((NSHTTPURLResponse*)response).statusCode;
+                                 presentError([NSString
+                                     stringWithFormat:
+                                         @"Download failed (HTTP %ld: %@).",
+                                         (long)statusCode,
+                                         [NSHTTPURLResponse
+                                             localizedStringForStatusCode:
+                                                 statusCode]]);
+                                 return;
+                             }
+
+                             NSError* moveError = nil;
+                             [[NSFileManager defaultManager]
+                                 moveItemAtURL:location
+                                        toURL:inputFile
+                                        error:&moveError];
+                             if (moveError) {
+                                 presentError(moveError.localizedDescription);
+                                 return;
+                             }
+
+                             dispatch_async(dispatch_get_main_queue(), ^{
+                                 ffmpegDownload(
+                                     @[
+                                         @"-i", inputFile.path, @"-an",
+                                         @"-filter_complex",
+                                         @"split[a][b];[a]palettegen[p];[b][p]paletteuse",
+                                         @"-loop", @"0"
+                                     ],
+                                     @"gif", durationMs, inputFile);
+                             });
+                         }];
+                [task resume];
+            };
+
         // Variant builders
         TFNActionItem* (^makeMP4Item)(NSURL*, double, NSString*) =
             ^TFNActionItem*(NSURL* url, double durationMs, NSString* itemTitle) {
@@ -167,10 +347,7 @@ static UIViewController* TopMostController(void) {
                     actionItemWithTitle:itemTitle
                               imageName:@"arrow_down_circle_stroke"
                                  action:^{
-                                     ffmpegDownload(
-                                         [NSString stringWithFormat:@"-i %@ -c copy",
-                                                                    url.absoluteString],
-                                         @"mp4", durationMs);
+                                     downloadMP4(url);
                                  }];
             };
 
@@ -182,13 +359,7 @@ static UIViewController* TopMostController(void) {
                         localizedStringForKey:@"DOWNLOAD_AS_GIF_OPTION_TITLE"]
                           imageName:@"arrow_down_circle_stroke"
                              action:^{
-                                 ffmpegDownload(
-                                     [NSString
-                                         stringWithFormat:@"-i %@ -an -vf "
-                                                          @"split[a][b];[a]palettegen["
-                                                          @"p];[b][p]paletteuse",
-                                                          url.absoluteString],
-                                     @"gif", durationMs);
+                                 downloadGIF(url, durationMs);
                              }];
         };
 
@@ -199,12 +370,16 @@ static UIViewController* TopMostController(void) {
                           imageName:@"arrow_down_circle_stroke"
                              action:^{
                                  ffmpegDownload(
-                                     [NSString
-                                         stringWithFormat:
-                                             @"-i %@ -vf scale=%@:flags=lanczos -c:v "
-                                             @"h264_videotoolbox -b:v 2M -c:a copy",
-                                             url.absoluteString, resolution],
-                                     @"mp4", durationMs);
+                                     @[
+                                         @"-i", url.absoluteString, @"-vf",
+                                         [NSString
+                                             stringWithFormat:
+                                                 @"scale=%@:flags=lanczos",
+                                                 resolution],
+                                         @"-c:v", @"h264_videotoolbox",
+                                         @"-b:v", @"2M", @"-c:a", @"copy"
+                                     ],
+                                     @"mp4", durationMs, nil);
                              }];
         };
 
@@ -224,18 +399,16 @@ static UIViewController* TopMostController(void) {
                 if (!url)
                     continue;
 
-                if ([variant.contentType isEqualToString:@"video/mp4"])
+                if (BHTVariantIsMP4(variant))
                     [mp4URLs addObject:url];
-                else if ([variant.contentType
-                             isEqualToString:@"application/x-mpegURL"] &&
-                         !m3u8URL)
+                else if (BHTVariantIsHLS(variant) && !m3u8URL)
                     m3u8URL = url;
             }
 
             NSMutableArray* items = [NSMutableArray new];
             NSMutableSet<NSString*>* offered = [NSMutableSet new];
             void (^appendMP4Items)(double) = ^(double durationMs) {
-                BOOL isGIF = media.mediaType == 2;
+                BOOL isGIF = BHTMediaLooksLikeGIF(media);
                 for (NSURL* url in mp4URLs) {
                     NSString* itemTitle =
                         isGIF ? [[BHTBundle sharedBundle]
@@ -287,8 +460,7 @@ static UIViewController* TopMostController(void) {
         NSMutableArray<TFSTwitterEntityMedia*>* videoEntities =
             [NSMutableArray new];
         for (TFSTwitterEntityMedia* media in mediaEntities) {
-            if ((media.mediaType == 2 || media.mediaType == 3) &&
-                media.videoInfo.variants.count > 0) {
+            if (media.videoInfo.variants.count > 0) {
                 [videoEntities addObject:media];
             }
         }
