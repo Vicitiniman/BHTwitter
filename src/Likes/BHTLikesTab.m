@@ -13,8 +13,10 @@
 
 static NSString* const kBHTLikesPage = @"likes";
 static char kBHTOriginalTabPageKey;
+static char kBHTLikesEntryKey;
 static char kBHTLikesRootControllerKey;
 static char kBHTLikesContainerControllerKey;
+static char kBHTLikesHostControllerKey;
 
 static NSObject* BHTLikesDiagnosticsLock(void) {
     static NSObject* lock;
@@ -29,11 +31,12 @@ static NSMutableDictionary* BHTMutableLikesDiagnostics(void) {
     dispatch_once(&onceToken, ^{
         diagnostics = [@{
             @"activityHistoryInitialTab": @4,
-            @"navigationMode": @"nativeEntryRoot",
+            @"navigationMode": @"nativeEntryOverlay",
             @"photoRequestVariant": @"orig",
             @"videoVariantPolicy": @"highestBitrateMP4",
             @"rootHookInstalled": @NO,
             @"nativeRootCreations": @0,
+            @"nativeSurfaceCreations": @0,
             @"tabActivations": @0,
             @"topResets": @0,
             @"capturedMediaItems": @0,
@@ -1139,93 +1142,145 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
 
 @end
 
-static IMP BHTOriginalRootImplementation;
-static Class BHTRootHookEntryClass;
-
-static id BHTLikesRootTabViewController(id entry, SEL selector) {
-    T1TabView* tabView =
-        [entry respondsToSelector:@selector(tabView)] ? [entry tabView] : nil;
-    BOOL isLikes = [BHTSettings boolForKey:@"enable_likes_tab"] &&
-                   [tabView.scribePage isEqualToString:kBHTLikesPage];
-    if (isLikes) {
-        UIViewController* root =
-            objc_getAssociatedObject(entry, &kBHTLikesRootControllerKey);
-        if (!root) {
-            BHTLikesViewController* likes = [BHTLikesViewController new];
-            UINavigationController* navigation =
-                [[UINavigationController alloc] initWithRootViewController:likes];
-            navigation.navigationBar.prefersLargeTitles = NO;
-            root = navigation;
-            objc_setAssociatedObject(entry, &kBHTLikesRootControllerKey, root,
-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(tabView,
-                                     &kBHTLikesContainerControllerKey, likes,
-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            BHTIncrementLikesDiagnostic(@"nativeRootCreations");
-            BHTSetLikesDiagnostic(@"rootEntryClass",
-                                  NSStringFromClass([entry class]));
-            BHTSetLikesDiagnostic(@"postsControllerClass",
-                likes.postsController
-                    ? NSStringFromClass([likes.postsController class])
-                    : @"");
-        }
-        return root;
+static UIViewController* BHTLikesHostController(UIViewController* root) {
+    if ([root isKindOfClass:UINavigationController.class]) {
+        UINavigationController* navigation = (UINavigationController*)root;
+        return navigation.viewControllers.firstObject ?: navigation.topViewController
+                                                       ?: root;
     }
-
-    return BHTOriginalRootImplementation
-               ? ((id (*)(id, SEL))BHTOriginalRootImplementation)(entry,
-                                                                   selector)
-               : nil;
+    return root;
 }
 
-static void BHTInstallLikesRootHook(id entry) {
-    if (!entry) return;
-    Class entryClass = object_getClass(entry);
-    NSString* className = NSStringFromClass(entryClass);
-    if (className.length == 0 || BHTRootHookEntryClass == entryClass) return;
-    // A process has one Grok entry class even when accounts change. Avoid
-    // stacking a second replacement over an already installed root hook.
-    if (BHTRootHookEntryClass) return;
+static BHTLikesViewController* BHTInstallLikesSurface(id entry,
+                                                      T1TabView* tabView) {
+    if (!entry || !tabView) return nil;
 
-    SEL selector = NSSelectorFromString(@"rootTabViewController");
-    Method method = class_getInstanceMethod(entryClass, selector);
-    if (!method) return;
-    BHTOriginalRootImplementation = method_getImplementation(method);
-    if (!BHTOriginalRootImplementation) return;
-
-    BHTRootHookEntryClass = entryClass;
-    class_replaceMethod(entryClass, selector,
-                        (IMP)BHTLikesRootTabViewController,
-                        method_getTypeEncoding(method));
-    Method installedMethod = class_getInstanceMethod(entryClass, selector);
-    if (!installedMethod || method_getImplementation(installedMethod) !=
-        (IMP)BHTLikesRootTabViewController) {
-        BHTOriginalRootImplementation = NULL;
-        BHTRootHookEntryClass = Nil;
-        return;
-    }
-    BHTSetLikesDiagnostic(@"rootHookInstalled", @YES);
-    BHTSetLikesDiagnostic(@"rootHookEntryClass", className);
-}
-
-void BHTActivateLikesTabView(UIView* view) {
-    if (![NSThread isMainThread]) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            BHTActivateLikesTabView(view);
-        });
-        return;
-    }
     BHTLikesViewController* likes =
-        objc_getAssociatedObject(view, &kBHTLikesContainerControllerKey);
+        objc_getAssociatedObject(entry, &kBHTLikesContainerControllerKey);
+    UIViewController* root =
+        objc_getAssociatedObject(entry, &kBHTLikesRootControllerKey);
+    if (!root) {
+        id candidate = BHTCallObject(entry, @"rootTabViewController");
+        if (![candidate isKindOfClass:UIViewController.class]) {
+            BHTSetLikesDiagnostic(@"rootResolutionFailed", @YES);
+            return nil;
+        }
+        root = candidate;
+        objc_setAssociatedObject(entry, &kBHTLikesRootControllerKey, root,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        BHTSetLikesDiagnostic(@"carrierRootClass",
+                              NSStringFromClass([root class]));
+    }
+
+    UIViewController* host =
+        objc_getAssociatedObject(entry, &kBHTLikesHostControllerKey);
+    if (!host) {
+        [root loadViewIfNeeded];
+        host = BHTLikesHostController(root);
+        [host loadViewIfNeeded];
+        objc_setAssociatedObject(entry, &kBHTLikesHostControllerKey, host,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        BHTSetLikesDiagnostic(@"carrierHostClass",
+                              NSStringFromClass([host class]));
+    }
+
+    if (!likes) {
+        likes = [BHTLikesViewController new];
+        [likes loadViewIfNeeded];
+        [host addChildViewController:likes];
+        likes.view.translatesAutoresizingMaskIntoConstraints = NO;
+        [host.view addSubview:likes.view];
+        [NSLayoutConstraint activateConstraints:@[
+            [likes.view.leadingAnchor
+                constraintEqualToAnchor:host.view.leadingAnchor],
+            [likes.view.trailingAnchor
+                constraintEqualToAnchor:host.view.trailingAnchor],
+            [likes.view.topAnchor constraintEqualToAnchor:host.view.topAnchor],
+            [likes.view.bottomAnchor
+                constraintEqualToAnchor:host.view.bottomAnchor]
+        ]];
+        [likes didMoveToParentViewController:host];
+        objc_setAssociatedObject(entry, &kBHTLikesContainerControllerKey, likes,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(tabView, &kBHTLikesContainerControllerKey,
+                                 likes, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        BHTIncrementLikesDiagnostic(@"nativeRootCreations");
+        BHTIncrementLikesDiagnostic(@"nativeSurfaceCreations");
+        BHTSetLikesDiagnostic(@"rootEntryClass",
+                              NSStringFromClass([entry class]));
+        BHTSetLikesDiagnostic(@"postsControllerClass",
+            likes.postsController
+                ? NSStringFromClass([likes.postsController class])
+                : @"");
+    }
+
+    [host.view bringSubviewToFront:likes.view];
+    return likes;
+}
+
+static void BHTRemoveLikesSurface(id entry, T1TabView* tabView) {
+    BHTLikesViewController* likes =
+        objc_getAssociatedObject(entry, &kBHTLikesContainerControllerKey);
+    if (likes.parentViewController) {
+        [likes willMoveToParentViewController:nil];
+        [likes.view removeFromSuperview];
+        [likes removeFromParentViewController];
+    }
+    objc_setAssociatedObject(tabView, &kBHTLikesContainerControllerKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(tabView, &kBHTLikesEntryKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(entry, &kBHTLikesContainerControllerKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(entry, &kBHTLikesHostControllerKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(entry, &kBHTLikesRootControllerKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void BHTActivateLikesTabViewNow(T1TabView* view) {
+    if (![BHTSettings boolForKey:@"enable_likes_tab"] || !view.isSelected ||
+        ![view.scribePage isEqualToString:kBHTLikesPage]) {
+        return;
+    }
+    id entry = objc_getAssociatedObject(view, &kBHTLikesEntryKey);
+    BHTLikesViewController* likes = BHTInstallLikesSurface(entry, view);
     if (![likes isKindOfClass:BHTLikesViewController.class]) return;
     BHTIncrementLikesDiagnostic(@"tabActivations");
 
-    UINavigationController* navigation = likes.navigationController;
-    if (navigation.topViewController != likes &&
-        [navigation.viewControllers containsObject:likes]) {
-        [navigation popToViewController:likes animated:NO];
+    UIViewController* host =
+        objc_getAssociatedObject(entry, &kBHTLikesHostControllerKey);
+    UINavigationController* navigation =
+        [objc_getAssociatedObject(entry, &kBHTLikesRootControllerKey)
+                isKindOfClass:UINavigationController.class]
+            ? objc_getAssociatedObject(entry, &kBHTLikesRootControllerKey)
+            : host.navigationController;
+    if (navigation && host &&
+        [navigation.viewControllers containsObject:host] &&
+        navigation.topViewController != host) {
+        [navigation popToViewController:host animated:NO];
     }
+    [host.view bringSubviewToFront:likes.view];
     [likes resetToNewest];
+
+    // The carrier can finish its own appearance/layout work after the tab view
+    // changes selection. Reassert the Likes surface on the following main-loop
+    // pass without replacing X's concrete Swift root controller.
+    __weak UIViewController* weakHost = host;
+    __weak BHTLikesViewController* weakLikes = likes;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakHost.view bringSubviewToFront:weakLikes.view];
+    });
+}
+
+void BHTActivateLikesTabView(UIView* view) {
+    // T1TabView changes selection while the Swift navigation owner is still
+    // mutating its controller arrays. Defer root access/containment until that
+    // transaction finishes to avoid re-entering the private selection path.
+    __weak T1TabView* weakView = (T1TabView*)view;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BHTActivateLikesTabViewNow(weakView);
+    });
 }
 
 NSArray* BHTEntriesByInstallingLikesDestination(NSArray* entries) {
@@ -1237,16 +1292,18 @@ NSArray* BHTEntriesByInstallingLikesDestination(NSArray* entries) {
         if (!tabView) continue;
         NSString* originalPage = objc_getAssociatedObject(tabView, &kBHTOriginalTabPageKey);
         if (!enabled && [tabView.scribePage isEqualToString:kBHTLikesPage]) {
+            BHTRemoveLikesSurface(entry, tabView);
             tabView.scribePage = originalPage.length ? originalPage : @"grok";
         }
         if (enabled && ([tabView.scribePage isEqualToString:@"grok"] ||
                         [originalPage isEqualToString:@"grok"])) {
-            BHTInstallLikesRootHook(entry);
             if (originalPage.length == 0) {
                 objc_setAssociatedObject(tabView, &kBHTOriginalTabPageKey,
                                          tabView.scribePage ?: @"grok",
                                          OBJC_ASSOCIATION_COPY_NONATOMIC);
             }
+            objc_setAssociatedObject(tabView, &kBHTLikesEntryKey, entry,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             tabView.scribePage = kBHTLikesPage;
         }
     }

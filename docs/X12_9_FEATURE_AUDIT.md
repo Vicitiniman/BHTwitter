@@ -64,7 +64,7 @@ Status meanings:
 | General | `expand_tco_links` | Updated | No longer unconditional |
 | General | `show_scroll_indicator` | Ported | Typed account feature-switch accessor |
 | Appearance | theme and app icon controls | Ported | Modern settings pages and live theme reapply |
-| Appearance | custom navigation | Combined | Captures/reorders native tab entries; opt-in Likes is a movable native-root replacement for the Grok carrier |
+| Appearance | custom navigation | Combined | Captures/reorders native tab entries; opt-in Likes is a movable child surface over the untouched concrete Grok root, avoiding X 12.9 Swift root-type crashes |
 | Appearance | `tab_bar_theming` | Ported | Native selected/unselected colors |
 | Appearance | `restore_tab_labels` | Updated | Current `T1TabView` title path |
 | Appearance | `restore_launch_animation` | Updated | No longer forced on; strips only the X reveal mask |
