@@ -11,9 +11,11 @@ X 12.9.
 - Highest-quality photo loading, optional full-frame timeline media, and a
   highest-video preference.
 - Modern video/GIF downloads, including supported Direct Message videos.
-- Native tab reordering plus an opt-in **My Likes** bottom destination.
+- Native tab reordering plus an opt-in, movable **My Likes** bottom destination
+  with normal in-tab navigation and swipe-back.
 - A Posts/Media view for Likes with a pinch-adjustable waterfall gallery,
-  original-quality photo viewing, and highest-available MP4 playback.
+  newest-first loading, continuous pagination, original-quality photo viewing,
+  and highest-available MP4 playback.
 - Updated profile, search, Grok, timeline, confirmation, appearance, branding,
   and accessibility-related features.
 - A runtime compatibility report that can be shared from the Debug settings.

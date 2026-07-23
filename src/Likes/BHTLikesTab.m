@@ -13,6 +13,57 @@
 
 static NSString* const kBHTLikesPage = @"likes";
 static char kBHTOriginalTabPageKey;
+static char kBHTLikesRootControllerKey;
+static char kBHTLikesContainerControllerKey;
+
+static NSObject* BHTLikesDiagnosticsLock(void) {
+    static NSObject* lock;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ lock = [NSObject new]; });
+    return lock;
+}
+
+static NSMutableDictionary* BHTMutableLikesDiagnostics(void) {
+    static NSMutableDictionary* diagnostics;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        diagnostics = [@{
+            @"activityHistoryInitialTab": @4,
+            @"navigationMode": @"nativeEntryRoot",
+            @"photoRequestVariant": @"orig",
+            @"videoVariantPolicy": @"highestBitrateMP4",
+            @"rootHookInstalled": @NO,
+            @"nativeRootCreations": @0,
+            @"tabActivations": @0,
+            @"topResets": @0,
+            @"capturedMediaItems": @0,
+            @"postRouteAttempts": @0,
+            @"postURLAcceptances": @0
+        } mutableCopy];
+    });
+    return diagnostics;
+}
+
+static void BHTSetLikesDiagnostic(NSString* key, id value) {
+    if (key.length == 0 || !value) return;
+    @synchronized(BHTLikesDiagnosticsLock()) {
+        BHTMutableLikesDiagnostics()[key] = value;
+    }
+}
+
+static void BHTIncrementLikesDiagnostic(NSString* key) {
+    if (key.length == 0) return;
+    @synchronized(BHTLikesDiagnosticsLock()) {
+        NSMutableDictionary* diagnostics = BHTMutableLikesDiagnostics();
+        diagnostics[key] = @([diagnostics[key] unsignedIntegerValue] + 1);
+    }
+}
+
+NSDictionary* BHTLikesDiagnosticsSnapshot(void) {
+    @synchronized(BHTLikesDiagnosticsLock()) {
+        return [BHTMutableLikesDiagnostics() copy];
+    }
+}
 
 NSString* BHTLikesPageID(void) {
     return kBHTLikesPage;
@@ -127,10 +178,10 @@ static UIViewController* BHTMakeNativeLikesController(id account) {
             invocation.target = bridge;
             invocation.selector = bridgeSelector;
             id accountArgument = account;
-            // Activity History orders Bookmarks, Videos, Articles, then Likes.
-            // The X 12.9 compatibility report confirms this fallback is the
-            // available factory on-device, so select the fourth tab directly.
-            NSInteger likesTab = 3;
+            // X 12.9's bridge enum is one-based even though its segmented
+            // control is zero-based: 3 opens Articles and 4 opens Likes. The
+            // device report confirms this bridge is the available factory.
+            NSInteger likesTab = 4;
             [invocation setArgument:&accountArgument atIndex:2];
             [invocation setArgument:&likesTab atIndex:3];
             [invocation invoke];
@@ -302,9 +353,11 @@ static NSArray<BHTLikedMediaItem*>* BHTMediaItemsFromSections(NSArray* sections)
 
                 BHTLikedMediaItem* model = [BHTLikedMediaItem new];
                 model.identifier = identifier;
-                model.previewURL =
-                    mediaURL.length ? [NSURL URLWithString:mediaURL]
-                                    : originalURL;
+                // The waterfall deliberately uses the original image too. A
+                // tap must not be the point where a low-resolution thumbnail
+                // finally changes to the full variant.
+                model.previewURL = originalURL ?:
+                    (mediaURL.length ? [NSURL URLWithString:mediaURL] : nil);
                 model.originalURL = originalURL ?: model.previewURL;
                 model.videoURL = videoURL;
                 model.aspectRatio = (width > 0 && height > 0) ? width / height : 1.0;
@@ -645,8 +698,8 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
     NSString* text = [item.statusText
         stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     NSString* title = text.length > 0
-                          ? [NSString stringWithFormat:@"%@\nView post on X", text]
-                          : @"View post on X";
+                          ? [NSString stringWithFormat:@"%@\nView post and replies", text]
+                          : @"View post and replies";
     [self.postButton setTitle:title forState:UIControlStateNormal];
     self.postButton.enabled = item.statusID > 0 || item.statusURL != nil;
     self.postButton.accessibilityHint = @"Opens the original liked post";
@@ -662,7 +715,18 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
 - (void)mediaItemsDidUpdate {
     if (!self.isViewLoaded || self.items.count == 0) return;
     NSUInteger previousCount = self.knownItemCount;
+    BHTMediaPageController* visible =
+        (BHTMediaPageController*)self.pageController.viewControllers.firstObject;
+    NSString* visibleIdentifier = visible.item.identifier;
     self.knownItemCount = self.items.count;
+    if (visibleIdentifier.length > 0) {
+        NSUInteger updatedIndex =
+            [self.items indexOfObjectPassingTest:^BOOL(
+                BHTLikedMediaItem* candidate, NSUInteger index, BOOL* stop) {
+                return [candidate.identifier isEqualToString:visibleIdentifier];
+            }];
+        if (updatedIndex != NSNotFound) self.currentIndex = updatedIndex;
+    }
     self.currentIndex = MIN(self.currentIndex, self.items.count - 1);
     if (previousCount == 0 || self.currentIndex + 1 >= previousCount) {
         BHTMediaPageController* current = [self pageAtIndex:self.currentIndex];
@@ -677,6 +741,7 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
 - (void)openCurrentPost:(id)sender {
     BHTLikedMediaItem* item = [self currentItem];
     if (!item) return;
+    BHTIncrementLikesDiagnostic(@"postRouteAttempts");
     NSURL* appURL = item.statusID > 0
                         ? [NSURL URLWithString:
                               [NSString stringWithFormat:@"twitter://status?id=%lld",
@@ -685,7 +750,13 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
     UIApplication* application = UIApplication.sharedApplication;
     if (!appURL) {
         if (item.statusURL) {
-            [application openURL:item.statusURL options:@{} completionHandler:nil];
+            [application openURL:item.statusURL
+                          options:@{}
+                completionHandler:^(BOOL success) {
+                    if (success) {
+                        BHTIncrementLikesDiagnostic(@"postURLAcceptances");
+                    }
+                }];
         }
         return;
     }
@@ -693,8 +764,18 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
     [application openURL:appURL
                   options:@{}
         completionHandler:^(BOOL success) {
+            if (success) {
+                BHTIncrementLikesDiagnostic(@"postURLAcceptances");
+            }
             if (!success && fallback) {
-                [application openURL:fallback options:@{} completionHandler:nil];
+                [application openURL:fallback
+                              options:@{}
+                    completionHandler:^(BOOL fallbackSuccess) {
+                        if (fallbackSuccess) {
+                            BHTIncrementLikesDiagnostic(
+                                @"postURLAcceptances");
+                        }
+                    }];
             }
         }];
 }
@@ -739,9 +820,11 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
 @property(nonatomic, strong) NSMutableSet<NSString*>* mediaIDs;
 @property(nonatomic, weak) BHTMediaPagerController* activeMediaPager;
 @property(nonatomic) BOOL requestedMore;
+@property(nonatomic) BOOL needsInitialTopReset;
 @property(nonatomic) NSUInteger loadRequestGeneration;
 - (void)ingestSections:(NSArray*)sections;
 - (void)loadMoreMedia;
+- (void)resetToNewest;
 @end
 
 static void BHTFindVerticalScrollView(UIView* view, UIScrollView** best,
@@ -774,6 +857,7 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
         _postsController = BHTMakeNativeLikesController(BHTCurrentAccount());
         _mediaItems = [NSMutableArray array];
         _mediaIDs = [NSMutableSet set];
+        _needsInitialTopReset = YES;
         self.title =
             [[BHTBundle sharedBundle] localizedStringForKey:@"MY_LIKES_TITLE"];
     }
@@ -830,6 +914,48 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
     }
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (!self.needsInitialTopReset) return;
+    self.needsInitialTopReset = NO;
+    [self resetToNewest];
+}
+
+- (void)resetToNewest {
+    if (!self.isViewLoaded) {
+        self.needsInitialTopReset = YES;
+        return;
+    }
+    BHTIncrementLikesDiagnostic(@"topResets");
+
+    // Activity History restores a private child scroll view after its own
+    // layout pass. Reset immediately and once on the next pass so a fresh tab
+    // selection consistently lands on the newest liked post.
+    __weak typeof(self) weakSelf = self;
+    void (^resetOffsets)(void) = ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf.postsController.view layoutIfNeeded];
+        UIScrollView* nativeScroll =
+            BHTFindScrollableView(strongSelf.postsController.view);
+        if (nativeScroll) {
+            CGFloat top = -nativeScroll.adjustedContentInset.top;
+            [nativeScroll setContentOffset:
+                CGPointMake(nativeScroll.contentOffset.x, top) animated:NO];
+        }
+        if (strongSelf.collectionView) {
+            CGFloat top = -strongSelf.collectionView.adjustedContentInset.top;
+            [strongSelf.collectionView setContentOffset:
+                CGPointMake(strongSelf.collectionView.contentOffset.x, top)
+                                             animated:NO];
+        }
+    };
+    resetOffsets();
+    dispatch_async(dispatch_get_main_queue(), resetOffsets);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+                   dispatch_get_main_queue(), resetOffsets);
+}
+
 - (void)selectionChanged:(UISegmentedControl*)sender {
     BOOL media = sender.selectedSegmentIndex == 1;
     // Keep the native Likes timeline alive behind the opaque media grid. X
@@ -854,13 +980,59 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
 
 - (void)ingestSections:(NSArray*)sections {
     NSArray* incoming = BHTMediaItemsFromSections(sections);
-    BOOL changed = NO;
-    for (BHTLikedMediaItem* item in incoming) {
-        if ([self.mediaIDs containsObject:item.identifier]) continue;
-        [self.mediaIDs addObject:item.identifier];
-        [self.mediaItems addObject:item];
-        changed = YES;
+    if (incoming.count == 0) {
+        self.loadRequestGeneration++;
+        self.requestedMore = NO;
+        return;
     }
+
+    NSMutableSet<NSString*>* incomingIDs = [NSMutableSet set];
+    BOOL overlapsExisting = NO;
+    for (BHTLikedMediaItem* item in incoming) {
+        if (item.identifier.length == 0 ||
+            [incomingIDs containsObject:item.identifier]) {
+            continue;
+        }
+        [incomingIDs addObject:item.identifier];
+        if ([self.mediaIDs containsObject:item.identifier]) {
+            overlapsExisting = YES;
+        }
+    }
+
+    // X normally sends the complete ordered section snapshot. Rebuild from
+    // that order so newly liked media moves to the top. If it sends a page-only
+    // delta, a pending pagination request identifies it as older content and
+    // appends it instead; a refresh delta is prepended.
+    NSMutableArray<BHTLikedMediaItem*>* ordered = [NSMutableArray array];
+    NSMutableSet<NSString*>* orderedIDs = [NSMutableSet set];
+    void (^appendUnique)(NSArray<BHTLikedMediaItem*>*) =
+        ^(NSArray<BHTLikedMediaItem*>* items) {
+            for (BHTLikedMediaItem* item in items) {
+                if (item.identifier.length == 0 ||
+                    [orderedIDs containsObject:item.identifier]) {
+                    continue;
+                }
+                [orderedIDs addObject:item.identifier];
+                [ordered addObject:item];
+            }
+        };
+
+    BOOL pageOnlyPagination = self.requestedMore && !overlapsExisting;
+    if (pageOnlyPagination) {
+        appendUnique(self.mediaItems);
+        appendUnique(incoming);
+    } else {
+        appendUnique(incoming);
+        appendUnique(self.mediaItems);
+    }
+
+    NSArray<NSString*>* previousOrder =
+        [self.mediaItems valueForKey:@"identifier"];
+    NSArray<NSString*>* nextOrder = [ordered valueForKey:@"identifier"];
+    BOOL changed = ![previousOrder isEqualToArray:nextOrder];
+    [self.mediaItems setArray:ordered];
+    [self.mediaIDs setSet:orderedIDs];
+    BHTSetLikesDiagnostic(@"capturedMediaItems", @(self.mediaItems.count));
     self.loadRequestGeneration++;
     self.requestedMore = NO;
     if (changed && self.isViewLoaded) {
@@ -967,81 +1139,94 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
 
 @end
 
-static UIViewController* BHTOwningViewController(UIView* view) {
-    UIResponder* responder = view;
-    while ((responder = responder.nextResponder)) {
-        if ([responder isKindOfClass:UIViewController.class]) {
-            return (UIViewController*)responder;
+static IMP BHTOriginalRootImplementation;
+static Class BHTRootHookEntryClass;
+
+static id BHTLikesRootTabViewController(id entry, SEL selector) {
+    T1TabView* tabView =
+        [entry respondsToSelector:@selector(tabView)] ? [entry tabView] : nil;
+    BOOL isLikes = [BHTSettings boolForKey:@"enable_likes_tab"] &&
+                   [tabView.scribePage isEqualToString:kBHTLikesPage];
+    if (isLikes) {
+        UIViewController* root =
+            objc_getAssociatedObject(entry, &kBHTLikesRootControllerKey);
+        if (!root) {
+            BHTLikesViewController* likes = [BHTLikesViewController new];
+            UINavigationController* navigation =
+                [[UINavigationController alloc] initWithRootViewController:likes];
+            navigation.navigationBar.prefersLargeTitles = NO;
+            root = navigation;
+            objc_setAssociatedObject(entry, &kBHTLikesRootControllerKey, root,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(tabView,
+                                     &kBHTLikesContainerControllerKey, likes,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            BHTIncrementLikesDiagnostic(@"nativeRootCreations");
+            BHTSetLikesDiagnostic(@"rootEntryClass",
+                                  NSStringFromClass([entry class]));
+            BHTSetLikesDiagnostic(@"postsControllerClass",
+                likes.postsController
+                    ? NSStringFromClass([likes.postsController class])
+                    : @"");
         }
+        return root;
     }
-    return nil;
+
+    return BHTOriginalRootImplementation
+               ? ((id (*)(id, SEL))BHTOriginalRootImplementation)(entry,
+                                                                   selector)
+               : nil;
 }
 
-static UIViewController* BHTVisibleViewController(UIViewController* root) {
-    UIViewController* current = root;
-    while (current) {
-        UIViewController* next = current.presentedViewController;
-        if (!next && [current isKindOfClass:UINavigationController.class]) {
-            next = ((UINavigationController*)current).visibleViewController;
-        }
-        if (!next && [current isKindOfClass:UITabBarController.class]) {
-            next = ((UITabBarController*)current).selectedViewController;
-        }
-        if (!next || next == current) break;
-        current = next;
+static void BHTInstallLikesRootHook(id entry) {
+    if (!entry) return;
+    Class entryClass = object_getClass(entry);
+    NSString* className = NSStringFromClass(entryClass);
+    if (className.length == 0 || BHTRootHookEntryClass == entryClass) return;
+    // A process has one Grok entry class even when accounts change. Avoid
+    // stacking a second replacement over an already installed root hook.
+    if (BHTRootHookEntryClass) return;
+
+    SEL selector = NSSelectorFromString(@"rootTabViewController");
+    Method method = class_getInstanceMethod(entryClass, selector);
+    if (!method) return;
+    BHTOriginalRootImplementation = method_getImplementation(method);
+    if (!BHTOriginalRootImplementation) return;
+
+    BHTRootHookEntryClass = entryClass;
+    class_replaceMethod(entryClass, selector,
+                        (IMP)BHTLikesRootTabViewController,
+                        method_getTypeEncoding(method));
+    Method installedMethod = class_getInstanceMethod(entryClass, selector);
+    if (!installedMethod || method_getImplementation(installedMethod) !=
+        (IMP)BHTLikesRootTabViewController) {
+        BHTOriginalRootImplementation = NULL;
+        BHTRootHookEntryClass = Nil;
+        return;
     }
-    return current;
+    BHTSetLikesDiagnostic(@"rootHookInstalled", @YES);
+    BHTSetLikesDiagnostic(@"rootHookEntryClass", className);
 }
 
-static UIViewController* BHTTopViewController(UIView* sourceView) {
-    UIViewController* owner = BHTOwningViewController(sourceView);
-    if (owner.view.window) return BHTVisibleViewController(owner);
-
-    UIWindow* keyWindow = nil;
-    for (UIWindow* window in UIApplication.sharedApplication.windows) {
-        if (window.isKeyWindow) {
-            keyWindow = window;
-            break;
-        }
-    }
-    UIViewController* root = keyWindow.rootViewController ?:
-        UIApplication.sharedApplication.windows.firstObject.rootViewController;
-    return BHTVisibleViewController(root);
-}
-
-void BHTPresentLikesFromView(UIView* sourceView) {
+void BHTActivateLikesTabView(UIView* view) {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            BHTPresentLikesFromView(sourceView);
+            BHTActivateLikesTabView(view);
         });
         return;
     }
-    if (![BHTSettings boolForKey:@"enable_likes_tab"]) return;
-    UIViewController* host = BHTTopViewController(sourceView);
-    if (!host || BHTFindController(host, BHTLikesViewController.class)) return;
+    BHTLikesViewController* likes =
+        objc_getAssociatedObject(view, &kBHTLikesContainerControllerKey);
+    if (![likes isKindOfClass:BHTLikesViewController.class]) return;
+    BHTIncrementLikesDiagnostic(@"tabActivations");
 
-    BHTLikesViewController* likes = [BHTLikesViewController new];
-    likes.navigationItem.leftBarButtonItem =
-        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                                                     target:likes
-                                                     action:@selector(bht_closeLikes)];
-    UINavigationController* navigation =
-        [[UINavigationController alloc] initWithRootViewController:likes];
-    navigation.modalPresentationStyle = UIModalPresentationFullScreen;
-    [host presentViewController:navigation animated:YES completion:nil];
+    UINavigationController* navigation = likes.navigationController;
+    if (navigation.topViewController != likes &&
+        [navigation.viewControllers containsObject:likes]) {
+        [navigation popToViewController:likes animated:NO];
+    }
+    [likes resetToNewest];
 }
-
-@interface BHTLikesViewController (Presentation)
-- (void)bht_closeLikes;
-@end
-
-@implementation BHTLikesViewController (Presentation)
-
-- (void)bht_closeLikes {
-    [self dismissViewControllerAnimated:YES completion:nil];
-}
-
-@end
 
 NSArray* BHTEntriesByInstallingLikesDestination(NSArray* entries) {
     BOOL enabled = [BHTSettings boolForKey:@"enable_likes_tab"];
@@ -1056,6 +1241,7 @@ NSArray* BHTEntriesByInstallingLikesDestination(NSArray* entries) {
         }
         if (enabled && ([tabView.scribePage isEqualToString:@"grok"] ||
                         [originalPage isEqualToString:@"grok"])) {
+            BHTInstallLikesRootHook(entry);
             if (originalPage.length == 0) {
                 objc_setAssociatedObject(tabView, &kBHTOriginalTabPageKey,
                                          tabView.scribePage ?: @"grok",
@@ -1067,12 +1253,14 @@ NSArray* BHTEntriesByInstallingLikesDestination(NSArray* entries) {
     return result;
 }
 
-void BHTCaptureLikesSections(UIViewController* dataViewController, NSArray* sections) {
+BOOL BHTCaptureLikesSections(UIViewController* dataViewController, NSArray* sections) {
     UIViewController* current = dataViewController;
     while (current && ![current isKindOfClass:BHTLikesViewController.class]) {
         current = current.parentViewController;
     }
     if ([current isKindOfClass:BHTLikesViewController.class]) {
         [(BHTLikesViewController*)current ingestSections:sections];
+        return YES;
     }
+    return NO;
 }
