@@ -84,12 +84,608 @@ static BOOL BHTVariantIsHLS(TFSTwitterEntityMediaVideoVariant* variant) {
     return [url.pathExtension.lowercaseString isEqualToString:@"m3u8"];
 }
 
+static NSURL* BHTHighestQualityMP4URL(TFSTwitterEntityMedia* media) {
+    TFSTwitterEntityMediaVideoVariant* best = nil;
+    for (TFSTwitterEntityMediaVideoVariant* variant in
+         media.videoInfo.variants) {
+        if (!BHTVariantIsMP4(variant) || variant.url.length == 0) {
+            continue;
+        }
+        if (!best || variant.bitrate > best.bitrate) {
+            best = variant;
+        }
+    }
+    return best.url.length > 0 ? [NSURL URLWithString:best.url] : nil;
+}
+
+static NSURL* BHTFallbackHLSURL(TFSTwitterEntityMedia* media) {
+    for (TFSTwitterEntityMediaVideoVariant* variant in
+         media.videoInfo.variants) {
+        if (BHTVariantIsHLS(variant) && variant.url.length > 0) {
+            return [NSURL URLWithString:variant.url];
+        }
+    }
+    NSString* primary = media.videoInfo.primaryUrl;
+    NSURL* primaryURL =
+        primary.length > 0 ? [NSURL URLWithString:primary] : nil;
+    return [primaryURL.pathExtension.lowercaseString isEqualToString:@"m3u8"]
+               ? primaryURL
+               : nil;
+}
+
+static NSURL* BHTTemporaryMediaURL(NSString* extension) {
+    NSString* filename =
+        [NSString stringWithFormat:@"%@.%@", NSUUID.UUID.UUIDString,
+                                   extension];
+    return [[NSURL fileURLWithPath:NSTemporaryDirectory()]
+        URLByAppendingPathComponent:filename];
+}
+
+static NSURL* BHTOriginalPhotoURL(TFSTwitterEntityMedia* media) {
+    NSString* rawURL = media.mediaURL;
+    if (rawURL.length == 0) {
+        @try {
+            id candidate = [media valueForKey:@"mediaURLHttps"];
+            if ([candidate isKindOfClass:NSString.class]) {
+                rawURL = candidate;
+            }
+        } @catch (__unused NSException* exception) {
+        }
+    }
+    if (rawURL.length == 0) return nil;
+
+    NSURLComponents* components =
+        [NSURLComponents componentsWithString:rawURL];
+    if (!components) return [NSURL URLWithString:rawURL];
+
+    NSString* extension = components.path.pathExtension.lowercaseString;
+    if (extension.length > 0) {
+        components.path =
+            [components.path stringByDeletingPathExtension];
+    }
+
+    NSMutableArray<NSURLQueryItem*>* queryItems =
+        [NSMutableArray array];
+    BOOL hasFormat = NO;
+    for (NSURLQueryItem* item in components.queryItems ?: @[]) {
+        if ([item.name isEqualToString:@"name"]) continue;
+        if ([item.name isEqualToString:@"format"]) hasFormat = YES;
+        [queryItems addObject:item];
+    }
+    if (!hasFormat && extension.length > 0) {
+        [queryItems
+            addObject:[NSURLQueryItem queryItemWithName:@"format"
+                                                  value:extension]];
+    }
+    [queryItems addObject:
+                    [NSURLQueryItem queryItemWithName:@"name"
+                                               value:@"orig"]];
+    components.queryItems = queryItems;
+    return components.URL ?: [NSURL URLWithString:rawURL];
+}
+
+static NSString* BHTPhotoExtension(NSURL* sourceURL,
+                                   NSURLResponse* response) {
+    NSURLComponents* components =
+        [NSURLComponents componentsWithURL:sourceURL
+                   resolvingAgainstBaseURL:NO];
+    for (NSURLQueryItem* item in components.queryItems ?: @[]) {
+        if ([item.name isEqualToString:@"format"] &&
+            item.value.length > 0) {
+            return item.value.lowercaseString;
+        }
+    }
+    NSString* suggested =
+        response.suggestedFilename.pathExtension.lowercaseString;
+    return suggested.length > 0 ? suggested : @"jpg";
+}
+
 #pragma mark - DownloadInlineButton
 @interface DownloadInlineButton ()
 @property (nonatomic, strong) TFNHUD* hud;
 @end
 
 @implementation DownloadInlineButton
+
+#pragma mark - Temporary media sharing
+
+- (void)bhtPresentExportError:(NSString*)message {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.hud hide];
+        UIAlertController* alert = [UIAlertController
+            alertControllerWithTitle:
+                [[BHTBundle sharedBundle]
+                    localizedTwitterStringForKey:@"ERROR_ALERT_TITLE"]
+                             message:message.length > 0
+                                         ? message
+                                         : [[BHTBundle sharedBundle]
+                                               localizedStringForKey:
+                                                   @"UNKNOWN_ERROR"]
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:
+                   [UIAlertAction
+                       actionWithTitle:[[BHTBundle sharedBundle]
+                                           localizedTwitterStringForKey:
+                                               @"OK_ACTION_LABEL"]
+                                 style:UIAlertActionStyleDefault
+                               handler:nil]];
+        [TopMostController() presentViewController:alert
+                                          animated:YES
+                                        completion:nil];
+    });
+}
+
+- (void)bhtPresentShareSheetForTemporaryURL:(NSURL*)fileURL {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.hud hide];
+        UIViewController* presenter = TopMostController();
+        if (!presenter || !fileURL) {
+            [self bhtPresentExportError:nil];
+            return;
+        }
+
+        UIActivityViewController* activity =
+            [[UIActivityViewController alloc]
+                initWithActivityItems:@[fileURL]
+                applicationActivities:nil];
+        activity.completionWithItemsHandler =
+            ^(UIActivityType activityType, BOOL completed,
+              NSArray* returnedItems, NSError* activityError) {
+                [[NSFileManager defaultManager]
+                    removeItemAtURL:fileURL
+                             error:nil];
+            };
+        if (activity.popoverPresentationController) {
+            activity.popoverPresentationController.sourceView =
+                presenter.view;
+            activity.popoverPresentationController.sourceRect =
+                CGRectMake(CGRectGetMidX(presenter.view.bounds),
+                           CGRectGetMidY(presenter.view.bounds), 1, 1);
+        }
+        [presenter presentViewController:activity
+                               animated:YES
+                             completion:nil];
+    });
+}
+
+- (void)bhtShareTemporaryMP4File:(NSURL*)sourceFile asGIF:(BOOL)asGIF {
+    if (!asGIF) {
+        [self bhtPresentShareSheetForTemporaryURL:sourceFile];
+        return;
+    }
+
+    NSURL* gifFile = BHTTemporaryMediaURL(@"gif");
+    NSArray<NSString*>* command = @[
+        @"-y", @"-nostdin", @"-hide_banner", @"-loglevel", @"error",
+        @"-i", sourceFile.path, @"-an", @"-filter_complex",
+        @"split[a][b];[a]palettegen[p];[b][p]paletteuse", @"-loop", @"0",
+        gifFile.path
+    ];
+    [FFmpegKit
+        executeWithArgumentsAsync:command
+        withCompleteCallback:^(FFmpegSession* session) {
+            [[NSFileManager defaultManager] removeItemAtURL:sourceFile
+                                                     error:nil];
+            if ([ReturnCode isSuccess:[session getReturnCode]]) {
+                [self bhtPresentShareSheetForTemporaryURL:gifFile];
+            } else {
+                [[NSFileManager defaultManager] removeItemAtURL:gifFile
+                                                         error:nil];
+                [self bhtPresentExportError:nil];
+            }
+        }
+        withLogCallback:nil
+        withStatisticsCallback:nil];
+}
+
+- (void)shareHighestQualityMediaEntities:(NSArray*)mediaEntities {
+    NSMutableArray<TFSTwitterEntityMedia*>* candidates =
+        [NSMutableArray array];
+    for (id candidate in mediaEntities) {
+        if ([candidate respondsToSelector:@selector(videoInfo)] &&
+            [candidate videoInfo].variants.count > 0) {
+            [candidates addObject:candidate];
+        }
+    }
+    if (candidates.count > 1) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIViewController* presenter = TopMostController();
+            if (!presenter) {
+                [self bhtPresentExportError:nil];
+                return;
+            }
+            BHTBundle* bundle = [BHTBundle sharedBundle];
+            UIAlertController* chooser =
+                [UIAlertController
+                    alertControllerWithTitle:
+                        [bundle localizedStringForKey:
+                                    @"MEDIA_ACTION_CHOOSE_SHARE_TITLE"]
+                                     message:nil
+                              preferredStyle:
+                                  UIAlertControllerStyleActionSheet];
+            [candidates
+                enumerateObjectsUsingBlock:
+                    ^(TFSTwitterEntityMedia* candidate, NSUInteger index,
+                      __unused BOOL* stop) {
+                NSString* formatKey =
+                    BHTMediaLooksLikeGIF(candidate)
+                        ? @"MEDIA_ACTION_SHARE_GIF_NUMBER_TITLE"
+                        : @"MEDIA_ACTION_SHARE_VIDEO_NUMBER_TITLE";
+                NSString* title =
+                    [NSString
+                        localizedStringWithFormat:
+                            [bundle localizedStringForKey:formatKey],
+                            (unsigned long)index + 1];
+                [chooser
+                    addAction:
+                        [UIAlertAction
+                            actionWithTitle:title
+                                     style:UIAlertActionStyleDefault
+                                   handler:
+                                       ^(__unused UIAlertAction* action) {
+                    [self
+                        shareHighestQualityMediaEntities:@[candidate]];
+                }]];
+            }];
+            [chooser
+                addAction:
+                    [UIAlertAction
+                        actionWithTitle:
+                            [bundle localizedTwitterStringForKey:
+                                        @"CANCEL_ACTION_LABEL"]
+                                 style:UIAlertActionStyleCancel
+                               handler:nil]];
+            if (chooser.popoverPresentationController) {
+                chooser.popoverPresentationController.sourceView =
+                    presenter.view;
+                chooser.popoverPresentationController.sourceRect =
+                    CGRectMake(CGRectGetMidX(presenter.view.bounds),
+                               CGRectGetMidY(presenter.view.bounds), 1, 1);
+            }
+            [presenter presentViewController:chooser
+                                    animated:YES
+                                  completion:nil];
+        });
+        return;
+    }
+
+    TFSTwitterEntityMedia* media = candidates.firstObject;
+    NSURL* sourceURL = media ? BHTHighestQualityMP4URL(media) : nil;
+    NSURL* hlsURL = sourceURL ? nil : BHTFallbackHLSURL(media);
+    sourceURL = sourceURL ?: hlsURL;
+    if (!sourceURL) {
+        [self bhtPresentExportError:nil];
+        return;
+    }
+
+    [self.hud hide];
+    self.hud = [[objc_getClass("TFNHUD") alloc]
+        initWithText:[[BHTBundle sharedBundle]
+                         localizedTwitterStringForKey:
+                             @"DOWNLOAD_LIVE_ACTIVITY_DOWNLOADING"]];
+    [self.hud show];
+
+    BOOL exportAsGIF = BHTMediaLooksLikeGIF(media);
+    NSURL* sourceFile = BHTTemporaryMediaURL(@"mp4");
+    if (hlsURL) {
+        NSArray<NSString*>* command = @[
+            @"-y", @"-nostdin", @"-hide_banner", @"-loglevel", @"error",
+            @"-i", hlsURL.absoluteString, @"-c", @"copy", @"-movflags",
+            @"+faststart", sourceFile.path
+        ];
+        [FFmpegKit
+            executeWithArgumentsAsync:command
+            withCompleteCallback:^(FFmpegSession* session) {
+                if ([ReturnCode isSuccess:[session getReturnCode]]) {
+                    [self bhtShareTemporaryMP4File:sourceFile
+                                             asGIF:exportAsGIF];
+                } else {
+                    [[NSFileManager defaultManager]
+                        removeItemAtURL:sourceFile
+                                 error:nil];
+                    [self bhtPresentExportError:nil];
+                }
+            }
+            withLogCallback:nil
+            withStatisticsCallback:nil];
+        return;
+    }
+
+    NSURLSessionDownloadTask* task =
+        [[NSURLSession sharedSession]
+            downloadTaskWithURL:sourceURL
+             completionHandler:^(NSURL* location, NSURLResponse* response,
+                                 NSError* error) {
+                 if (error || !location) {
+                     [self bhtPresentExportError:error.localizedDescription];
+                     return;
+                 }
+                 if ([response isKindOfClass:NSHTTPURLResponse.class]) {
+                     NSInteger statusCode =
+                         ((NSHTTPURLResponse*)response).statusCode;
+                     if (statusCode < 200 || statusCode >= 300) {
+                         [self bhtPresentExportError:
+                                   [NSString
+                                       stringWithFormat:
+                                           @"Download failed (HTTP %ld: %@).",
+                                           (long)statusCode,
+                                           [NSHTTPURLResponse
+                                               localizedStringForStatusCode:
+                                                   statusCode]]];
+                         return;
+                     }
+                 }
+
+                 NSError* moveError = nil;
+                 [[NSFileManager defaultManager]
+                     moveItemAtURL:location
+                            toURL:sourceFile
+                            error:&moveError];
+                 if (moveError) {
+                     [self bhtPresentExportError:
+                               moveError.localizedDescription];
+                     return;
+                 }
+
+                 [self bhtShareTemporaryMP4File:sourceFile
+                                          asGIF:exportAsGIF];
+             }];
+    [task resume];
+}
+
+- (NSArray<TFSTwitterEntityMedia*>*)bhtPhotoMediaEntities:
+    (NSArray*)mediaEntities {
+    NSMutableArray<TFSTwitterEntityMedia*>* photos =
+        [NSMutableArray array];
+    for (id candidate in mediaEntities) {
+        if (![candidate respondsToSelector:@selector(mediaType)] ||
+            ![candidate respondsToSelector:@selector(mediaURL)]) {
+            continue;
+        }
+        TFSTwitterEntityMedia* media = candidate;
+        if (media.videoInfo.variants.count == 0 &&
+            BHTOriginalPhotoURL(media) != nil) {
+            [photos addObject:media];
+        }
+    }
+    return [photos copy];
+}
+
+- (TFSTwitterEntityMedia*)bhtFirstPhotoMediaEntity:(NSArray*)mediaEntities {
+    return [self bhtPhotoMediaEntities:mediaEntities].firstObject;
+}
+
+- (BOOL)bhtPresentPhotoChooserIfNeeded:(NSArray*)mediaEntities
+                                sharing:(BOOL)sharing {
+    NSArray<TFSTwitterEntityMedia*>* photos =
+        [self bhtPhotoMediaEntities:mediaEntities];
+    if (photos.count <= 1) return NO;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController* presenter = TopMostController();
+        if (!presenter) {
+            [self bhtPresentExportError:nil];
+            return;
+        }
+        BHTBundle* bundle = [BHTBundle sharedBundle];
+        UIAlertController* chooser =
+            [UIAlertController
+                alertControllerWithTitle:
+                    [bundle localizedStringForKey:
+                                @"MEDIA_ACTION_CHOOSE_PHOTO_TITLE"]
+                                 message:nil
+                          preferredStyle:UIAlertControllerStyleActionSheet];
+        [photos
+            enumerateObjectsUsingBlock:
+                ^(TFSTwitterEntityMedia* photo, NSUInteger index,
+                  __unused BOOL* stop) {
+            NSString* title =
+                [NSString
+                    localizedStringWithFormat:
+                        [bundle localizedStringForKey:
+                                    @"MEDIA_ACTION_PHOTO_NUMBER_TITLE"],
+                        (unsigned long)index + 1];
+            [chooser
+                addAction:
+                    [UIAlertAction
+                        actionWithTitle:title
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                if (sharing) {
+                    [self
+                        shareOriginalPhotoMediaEntities:@[photo]];
+                } else {
+                    [self
+                        downloadOriginalPhotoMediaEntities:@[photo]];
+                }
+            }]];
+        }];
+        [chooser
+            addAction:
+                [UIAlertAction
+                    actionWithTitle:
+                        [bundle localizedTwitterStringForKey:
+                                    @"CANCEL_ACTION_LABEL"]
+                             style:UIAlertActionStyleCancel
+                           handler:nil]];
+        if (chooser.popoverPresentationController) {
+            chooser.popoverPresentationController.sourceView =
+                presenter.view;
+            chooser.popoverPresentationController.sourceRect =
+                CGRectMake(CGRectGetMidX(presenter.view.bounds),
+                           CGRectGetMidY(presenter.view.bounds), 1, 1);
+        }
+        [presenter presentViewController:chooser
+                                animated:YES
+                              completion:nil];
+    });
+    return YES;
+}
+
+- (void)bhtDownloadOriginalPhotoMediaEntities:(NSArray*)mediaEntities
+                                   completion:
+                                       (void (^)(NSURL*, NSError*))completion {
+    TFSTwitterEntityMedia* media =
+        [self bhtFirstPhotoMediaEntity:mediaEntities];
+    NSURL* sourceURL = media ? BHTOriginalPhotoURL(media) : nil;
+    if (!sourceURL) {
+        NSError* error = [NSError
+            errorWithDomain:@"com.bhtwitter.media"
+                       code:1
+                   userInfo:@{
+                       NSLocalizedDescriptionKey:
+                           @"The original photo URL is unavailable."
+                   }];
+        if (completion) completion(nil, error);
+        return;
+    }
+
+    [self.hud hide];
+    self.hud = [[objc_getClass("TFNHUD") alloc]
+        initWithText:[[BHTBundle sharedBundle]
+                         localizedTwitterStringForKey:
+                             @"DOWNLOAD_LIVE_ACTIVITY_DOWNLOADING"]];
+    [self.hud show];
+
+    NSURLSessionDownloadTask* task =
+        [[NSURLSession sharedSession]
+            downloadTaskWithURL:sourceURL
+             completionHandler:^(NSURL* location, NSURLResponse* response,
+                                 NSError* error) {
+                 if (!error &&
+                     [response isKindOfClass:NSHTTPURLResponse.class]) {
+                     NSInteger statusCode =
+                         ((NSHTTPURLResponse*)response).statusCode;
+                     if (statusCode < 200 || statusCode >= 300) {
+                         error = [NSError
+                             errorWithDomain:@"com.bhtwitter.media"
+                                        code:statusCode
+                                    userInfo:@{
+                                        NSLocalizedDescriptionKey:
+                                            [NSString
+                                                stringWithFormat:
+                                                    @"The photo server returned HTTP %ld.",
+                                                    (long)statusCode]
+                                    }];
+                     }
+                 }
+
+                 NSURL* retainedURL = nil;
+                 if (!error && location) {
+                     retainedURL =
+                         BHTTemporaryMediaURL(
+                             BHTPhotoExtension(sourceURL, response));
+                     NSError* moveError = nil;
+                     if (![[NSFileManager defaultManager]
+                             moveItemAtURL:location
+                                    toURL:retainedURL
+                                    error:&moveError]) {
+                         retainedURL = nil;
+                         error = moveError;
+                     }
+                 }
+                 dispatch_async(dispatch_get_main_queue(), ^{
+                     if (completion) completion(retainedURL, error);
+                 });
+             }];
+    [task resume];
+}
+
+- (void)downloadOriginalPhotoMediaEntities:(NSArray*)mediaEntities {
+    if ([self bhtPresentPhotoChooserIfNeeded:mediaEntities
+                                     sharing:NO]) {
+        return;
+    }
+    [self
+        bhtDownloadOriginalPhotoMediaEntities:mediaEntities
+                                  completion:^(NSURL* fileURL,
+                                               NSError* error) {
+        if (error || !fileURL) {
+            [self bhtPresentExportError:error.localizedDescription];
+            return;
+        }
+
+        void (^savePhoto)(void) = ^{
+            [[PHPhotoLibrary sharedPhotoLibrary]
+                performChanges:^{
+                    [PHAssetChangeRequest
+                        creationRequestForAssetFromImageAtFileURL:fileURL];
+                }
+                completionHandler:^(BOOL success, NSError* saveError) {
+                    [[NSFileManager defaultManager]
+                        removeItemAtURL:fileURL
+                                 error:nil];
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self.hud hide];
+                        if (success) {
+                            UINotificationFeedbackGenerator* feedback =
+                                [UINotificationFeedbackGenerator new];
+                            [feedback
+                                notificationOccurred:
+                                    UINotificationFeedbackTypeSuccess];
+                        } else {
+                            [self
+                                bhtPresentExportError:
+                                    saveError.localizedDescription];
+                        }
+                    });
+                }];
+        };
+
+        PHAuthorizationStatus status =
+            [PHPhotoLibrary authorizationStatusForAccessLevel:
+                                PHAccessLevelAddOnly];
+        if (status == PHAuthorizationStatusAuthorized ||
+            status == PHAuthorizationStatusLimited) {
+            savePhoto();
+            return;
+        }
+        if (status == PHAuthorizationStatusNotDetermined) {
+            [PHPhotoLibrary
+                requestAuthorizationForAccessLevel:PHAccessLevelAddOnly
+                                           handler:
+                ^(PHAuthorizationStatus requestedStatus) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (requestedStatus ==
+                                PHAuthorizationStatusAuthorized ||
+                            requestedStatus ==
+                                PHAuthorizationStatusLimited) {
+                            savePhoto();
+                        } else {
+                            [[NSFileManager defaultManager]
+                                removeItemAtURL:fileURL
+                                         error:nil];
+                            [self
+                                bhtPresentExportError:
+                                    @"Allow photo access in Settings to download this photo."];
+                        }
+                    });
+                }];
+            return;
+        }
+
+        [[NSFileManager defaultManager] removeItemAtURL:fileURL error:nil];
+        [self bhtPresentExportError:
+                  @"Allow photo access in Settings to download this photo."];
+    }];
+}
+
+- (void)shareOriginalPhotoMediaEntities:(NSArray*)mediaEntities {
+    if ([self bhtPresentPhotoChooserIfNeeded:mediaEntities
+                                     sharing:YES]) {
+        return;
+    }
+    [self
+        bhtDownloadOriginalPhotoMediaEntities:mediaEntities
+                                  completion:^(NSURL* fileURL,
+                                               NSError* error) {
+        if (error || !fileURL) {
+            [self bhtPresentExportError:error.localizedDescription];
+            return;
+        }
+        [self bhtPresentShareSheetForTemporaryURL:fileURL];
+    }];
+}
 
 #pragma mark - Download handler
 - (void)presentDownloadOptionsForMediaEntities:(NSArray*)mediaEntities {

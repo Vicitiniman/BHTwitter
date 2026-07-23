@@ -1,6 +1,7 @@
 #import "Compatibility/BHTCompatibilityReporter.h"
 #import "Core/BHTSettings.h"
 #import "Likes/BHTLikesTab.h"
+#import "MediaActions/BHTMediaActionUtility.h"
 #import "Sidebar/BHTSidebarNavigationUtility.h"
 
 #import <UIKit/UIKit.h>
@@ -231,6 +232,7 @@ static NSArray* BHTRuntimeProbes(void) {
         BHTProbe(@"video", @"TweetMediaAttachments.MultiMediaView", @"inlineMediaInfos", NO),
         BHTProbe(@"video", @"TweetMediaAttachments.MultiMediaCarouselView", @"inlineMediaInfos", NO),
         BHTProbe(@"video", @"T1InlineMediaView", @"viewModel", NO),
+        BHTProbe(@"mediaActions", @"UIViewController", @"_t1_actionItemsForStatus:account:shareableEntity:entityURL:source:options:scribeComponent:doneBlock:", YES),
 
         BHTProbe(@"dmDownloads", @"DMConversation.MessageAttachmentView", @"layoutSubviews", NO),
         BHTProbe(@"dmDownloads", @"DMConversation.MessageSaveActionPlugin", @"init", NO),
@@ -336,6 +338,25 @@ static NSDictionary* BHTSettingsSnapshot(void) {
     return [snapshot copy];
 }
 
+static NSDictionary* BHTMediaActionSettingsSnapshot(void) {
+    NSDictionary* (^snapshot)(BHTMediaActionKind) =
+        ^NSDictionary*(BHTMediaActionKind kind) {
+            return @{
+                @"order":
+                    [BHTMediaActionUtility
+                        orderedActionIdentifiersForKind:kind],
+                @"hidden":
+                    [BHTMediaActionUtility
+                        hiddenActionIdentifiersForKind:kind]
+            };
+        };
+    return @{
+        @"photo": snapshot(BHTMediaActionKindPhoto),
+        @"video": snapshot(BHTMediaActionKindVideo),
+        @"gif": snapshot(BHTMediaActionKindGIF)
+    };
+}
+
 void BHTWriteCompatibilityReport(void) {
     NSArray* probes = BHTRuntimeProbes();
     NSUInteger available = 0;
@@ -384,6 +405,7 @@ void BHTWriteCompatibilityReport(void) {
         },
         @"features": featureSummary,
         @"settings": BHTSettingsSnapshot(),
+        @"mediaActionMenus": BHTMediaActionSettingsSnapshot(),
         @"likesRuntime": BHTLikesDiagnosticsSnapshot(),
         @"sidebarNavigation": @{
             @"visibleItems":

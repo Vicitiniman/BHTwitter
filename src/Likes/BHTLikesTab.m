@@ -6,6 +6,8 @@
 #import <math.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <Photos/Photos.h>
+#import <QuartzCore/QuartzCore.h>
 #import <string.h>
 
 #import "Core/BHTBundle.h"
@@ -13,6 +15,7 @@
 #import "Headers/TWHeaders.h"
 #import "Hooks/HookHelpers.h"
 #import "Likes/BHTLikesNavigationUtility.h"
+#import "MediaActions/BHTMediaActionUtility.h"
 
 static NSString* const kBHTLikesPage = @"likes";
 static char kBHTLikesEntryKey;
@@ -534,6 +537,98 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
     return cache;
 }
 
+static NSString* BHTPhotoFileExtension(NSURL* sourceURL,
+                                       NSURLResponse* response) {
+    NSString* extension = response.suggestedFilename.pathExtension;
+    if (extension.length == 0) extension = sourceURL.pathExtension;
+    if (extension.length == 0) {
+        NSURLComponents* components =
+            [NSURLComponents componentsWithURL:sourceURL
+                       resolvingAgainstBaseURL:NO];
+        for (NSURLQueryItem* item in components.queryItems ?: @[]) {
+            if ([item.name.lowercaseString isEqualToString:@"format"] &&
+                item.value.length > 0) {
+                extension = item.value;
+                break;
+            }
+        }
+    }
+    extension = extension.lowercaseString;
+    NSCharacterSet* invalid =
+        [NSCharacterSet.alphanumericCharacterSet invertedSet];
+    extension =
+        [[extension componentsSeparatedByCharactersInSet:invalid]
+            componentsJoinedByString:@""];
+    return extension.length > 0 ? extension : @"jpg";
+}
+
+static void BHTDownloadOriginalPhoto(
+    NSURL* sourceURL,
+    void (^completion)(NSURL* temporaryURL, NSError* error)) {
+    if (!sourceURL) {
+        NSError* error =
+            [NSError errorWithDomain:@"com.bhtwitter.likes"
+                                code:1
+                            userInfo:@{
+                                NSLocalizedDescriptionKey:
+                                    @"The original photo URL is unavailable."
+                            }];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(nil, error);
+        });
+        return;
+    }
+
+    NSURLSessionDownloadTask* task =
+        [[NSURLSession sharedSession]
+            downloadTaskWithURL:sourceURL
+              completionHandler:^(NSURL* location, NSURLResponse* response,
+                                  NSError* error) {
+        NSHTTPURLResponse* httpResponse =
+            [response isKindOfClass:NSHTTPURLResponse.class]
+                ? (NSHTTPURLResponse*)response
+                : nil;
+        if (!error && httpResponse &&
+            (httpResponse.statusCode < 200 ||
+             httpResponse.statusCode >= 300)) {
+            error =
+                [NSError errorWithDomain:@"com.bhtwitter.likes"
+                                    code:httpResponse.statusCode
+                                userInfo:@{
+                                    NSLocalizedDescriptionKey:
+                                        [NSString stringWithFormat:
+                                            @"The photo server returned HTTP %ld.",
+                                            (long)httpResponse.statusCode]
+                                }];
+        }
+
+        NSURL* retainedURL = nil;
+        if (!error && location) {
+            NSString* extension =
+                BHTPhotoFileExtension(sourceURL, response);
+            retainedURL =
+                [[NSURL fileURLWithPath:NSTemporaryDirectory()
+                           isDirectory:YES]
+                    URLByAppendingPathComponent:
+                        [NSString stringWithFormat:@"%@.%@",
+                                                   [[NSUUID UUID] UUIDString],
+                                                   extension]];
+            NSError* moveError = nil;
+            if (![[NSFileManager defaultManager]
+                    moveItemAtURL:location
+                           toURL:retainedURL
+                           error:&moveError]) {
+                retainedURL = nil;
+                error = moveError;
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(retainedURL, error);
+        });
+    }];
+    [task resume];
+}
+
 @interface BHTMediaPageController : UIViewController <UIScrollViewDelegate>
 - (instancetype)initWithItem:(BHTLikedMediaItem*)item index:(NSUInteger)index;
 @property(nonatomic, strong) BHTLikedMediaItem* item;
@@ -541,7 +636,9 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
 @property(nonatomic, strong) UIScrollView* scrollView;
 @property(nonatomic, strong) UIImageView* imageView;
 @property(nonatomic, strong) UIButton* playButton;
+@property(nonatomic, strong) UIActivityIndicatorView* activityIndicator;
 @property(nonatomic, strong) NSURLSessionDataTask* task;
+@property(nonatomic) CGPoint mediaActionSourcePoint;
 @end
 
 @implementation BHTMediaPageController
@@ -567,6 +664,7 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
     self.imageView = [[UIImageView alloc] initWithFrame:self.scrollView.bounds];
     self.imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    self.imageView.userInteractionEnabled = YES;
     [self.scrollView addSubview:self.imageView];
 
     NSURL* imageURL = self.item.originalURL ?: self.item.previewURL;
@@ -607,6 +705,13 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
             [self.playButton.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
             [self.playButton.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor]
         ]];
+    } else {
+        UILongPressGestureRecognizer* longPress =
+            [[UILongPressGestureRecognizer alloc]
+                initWithTarget:self
+                        action:@selector(photoLongPressed:)];
+        longPress.minimumPressDuration = 0.5;
+        [self.imageView addGestureRecognizer:longPress];
     }
 }
 
@@ -623,6 +728,267 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
                      completion:^{ [player.player play]; }];
 }
 
+- (void)setPreparingPhoto:(BOOL)preparing {
+    if (preparing && !self.activityIndicator) {
+        if (@available(iOS 13.0, *)) {
+            self.activityIndicator =
+                [[UIActivityIndicatorView alloc]
+                    initWithActivityIndicatorStyle:
+                        UIActivityIndicatorViewStyleLarge];
+        } else {
+            self.activityIndicator =
+                [[UIActivityIndicatorView alloc]
+                    initWithActivityIndicatorStyle:
+                        UIActivityIndicatorViewStyleWhiteLarge];
+        }
+        self.activityIndicator.translatesAutoresizingMaskIntoConstraints = NO;
+        self.activityIndicator.color = UIColor.whiteColor;
+        self.activityIndicator.backgroundColor =
+            [UIColor colorWithWhite:0 alpha:0.62];
+        self.activityIndicator.layer.cornerRadius = 12;
+        [self.view addSubview:self.activityIndicator];
+        [NSLayoutConstraint activateConstraints:@[
+            [self.activityIndicator.centerXAnchor
+                constraintEqualToAnchor:self.view.centerXAnchor],
+            [self.activityIndicator.centerYAnchor
+                constraintEqualToAnchor:self.view.centerYAnchor],
+            [self.activityIndicator.widthAnchor constraintEqualToConstant:64],
+            [self.activityIndicator.heightAnchor constraintEqualToConstant:64]
+        ]];
+    }
+    if (preparing) {
+        [self.activityIndicator startAnimating];
+        [self.view bringSubviewToFront:self.activityIndicator];
+    } else {
+        [self.activityIndicator stopAnimating];
+        [self.activityIndicator removeFromSuperview];
+        self.activityIndicator = nil;
+    }
+}
+
+- (BOOL)isCurrentPagerPage {
+    UIViewController* parent = self.parentViewController;
+    if ([parent isKindOfClass:UIPageViewController.class]) {
+        return ((UIPageViewController*)parent)
+                   .viewControllers.firstObject == self &&
+               self.view.window != nil;
+    }
+    return self.view.window != nil;
+}
+
+- (void)showPhotoMessage:(NSString*)title message:(NSString*)message {
+    if (![self isCurrentPagerPage]) return;
+    UIAlertController* alert =
+        [UIAlertController alertControllerWithTitle:title
+                                           message:message
+                                    preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                                             style:UIAlertActionStyleDefault
+                                           handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)prepareOriginalPhoto:
+    (void (^)(NSURL* temporaryURL, NSError* error))completion {
+    NSURL* sourceURL = self.item.originalURL ?: self.item.previewURL;
+    [self setPreparingPhoto:YES];
+    __weak typeof(self) weakSelf = self;
+    BHTDownloadOriginalPhoto(
+        sourceURL, ^(NSURL* temporaryURL, NSError* error) {
+            typeof(self) strongSelf = weakSelf;
+            [strongSelf setPreparingPhoto:NO];
+            if (!strongSelf) {
+                if (temporaryURL) {
+                    [[NSFileManager defaultManager]
+                        removeItemAtURL:temporaryURL
+                                 error:nil];
+                }
+                return;
+            }
+            if (completion) completion(temporaryURL, error);
+        });
+}
+
+- (void)downloadCurrentPhoto {
+    __weak typeof(self) weakSelf = self;
+    [self prepareOriginalPhoto:^(NSURL* temporaryURL, NSError* error) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (error || !temporaryURL) {
+            [strongSelf showPhotoMessage:@"Download failed"
+                                 message:error.localizedDescription ?:
+                                             @"The photo could not be downloaded."];
+            return;
+        }
+
+        void (^savePhoto)(void) = ^{
+            [[PHPhotoLibrary sharedPhotoLibrary]
+                performChanges:^{
+                    [PHAssetChangeRequest
+                        creationRequestForAssetFromImageAtFileURL:
+                            temporaryURL];
+                }
+              completionHandler:^(BOOL success, NSError* saveError) {
+                [[NSFileManager defaultManager]
+                    removeItemAtURL:temporaryURL
+                             error:nil];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    typeof(self) innerSelf = weakSelf;
+                    if (!innerSelf) return;
+                    [innerSelf
+                        showPhotoMessage:
+                            success ? @"Photo saved" : @"Save failed"
+                                  message:
+                            success
+                                ? @"The original-quality photo was saved to Photos."
+                                : (saveError.localizedDescription ?:
+                                       @"The photo could not be saved.")];
+                });
+            }];
+        };
+
+        PHAuthorizationStatus status =
+            [PHPhotoLibrary authorizationStatusForAccessLevel:
+                                PHAccessLevelAddOnly];
+        if (status == PHAuthorizationStatusAuthorized ||
+            status == PHAuthorizationStatusLimited) {
+            savePhoto();
+        } else if (status == PHAuthorizationStatusNotDetermined) {
+            [PHPhotoLibrary
+                requestAuthorizationForAccessLevel:PHAccessLevelAddOnly
+                                           handler:
+                ^(PHAuthorizationStatus requestedStatus) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (requestedStatus == PHAuthorizationStatusAuthorized ||
+                        requestedStatus == PHAuthorizationStatusLimited) {
+                        savePhoto();
+                    } else {
+                        [[NSFileManager defaultManager]
+                            removeItemAtURL:temporaryURL
+                                     error:nil];
+                        [weakSelf
+                            showPhotoMessage:@"Photos access needed"
+                                     message:
+                                @"Allow photo access in Settings to download this photo."];
+                    }
+                });
+            }];
+        } else {
+            [[NSFileManager defaultManager] removeItemAtURL:temporaryURL
+                                                     error:nil];
+            [strongSelf
+                showPhotoMessage:@"Photos access needed"
+                         message:
+                    @"Allow photo access in Settings to download this photo."];
+        }
+    }];
+}
+
+- (void)shareCurrentPhoto {
+    __weak typeof(self) weakSelf = self;
+    [self prepareOriginalPhoto:^(NSURL* temporaryURL, NSError* error) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (error || !temporaryURL) {
+            [strongSelf showPhotoMessage:@"Share failed"
+                                 message:error.localizedDescription ?:
+                                             @"The photo could not be downloaded."];
+            return;
+        }
+        if (![strongSelf isCurrentPagerPage]) {
+            [[NSFileManager defaultManager] removeItemAtURL:temporaryURL
+                                                     error:nil];
+            return;
+        }
+
+        UIActivityViewController* share =
+            [[UIActivityViewController alloc]
+                initWithActivityItems:@[temporaryURL]
+                applicationActivities:nil];
+        share.completionWithItemsHandler =
+            ^(__unused UIActivityType activityType, __unused BOOL completed,
+              __unused NSArray* returnedItems,
+              __unused NSError* activityError) {
+            [[NSFileManager defaultManager]
+                removeItemAtURL:temporaryURL
+                         error:nil];
+        };
+        UIPopoverPresentationController* popover =
+            share.popoverPresentationController;
+        if (popover) {
+            popover.sourceView = strongSelf.imageView;
+            popover.sourceRect =
+                CGRectMake(strongSelf.mediaActionSourcePoint.x,
+                           strongSelf.mediaActionSourcePoint.y, 1, 1);
+        }
+        [strongSelf presentViewController:share
+                                 animated:YES
+                               completion:nil];
+    }];
+}
+
+- (void)photoLongPressed:(UILongPressGestureRecognizer*)gesture {
+    if (gesture.state != UIGestureRecognizerStateBegan ||
+        self.item.videoURL || ![self isCurrentPagerPage] ||
+        self.presentedViewController) {
+        return;
+    }
+    self.mediaActionSourcePoint = [gesture locationInView:self.imageView];
+    UIAlertController* menu =
+        [UIAlertController alertControllerWithTitle:nil
+                                           message:nil
+                                    preferredStyle:
+                                        UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    BHTBundle* bundle = [BHTBundle sharedBundle];
+    UIAlertAction* download =
+        [UIAlertAction
+            actionWithTitle:
+                [bundle localizedStringForKey:
+                            @"MEDIA_ACTION_DOWNLOAD_PHOTO_MENU_TITLE"]
+                     style:UIAlertActionStyleDefault
+                   handler:^(__unused UIAlertAction* action) {
+                       [weakSelf downloadCurrentPhoto];
+                   }];
+    BHTMediaActionSetIdentifier(download,
+                                BHTMediaActionDownloadIdentifier);
+    UIAlertAction* share =
+        [UIAlertAction
+            actionWithTitle:
+                [bundle localizedStringForKey:
+                            @"MEDIA_ACTION_SHARE_PHOTO_FILE_MENU_TITLE"]
+                     style:UIAlertActionStyleDefault
+                   handler:^(__unused UIAlertAction* action) {
+                       [weakSelf shareCurrentPhoto];
+                   }];
+    BHTMediaActionSetIdentifier(share,
+                                BHTMediaActionShareFileIdentifier);
+    NSArray<UIAlertAction*>* configured =
+        BHTMediaActionApplyPreferences(
+            @[download, share], BHTMediaActionKindPhoto);
+    if (configured.count == 0) return;
+    for (UIAlertAction* action in configured) {
+        [menu addAction:action];
+    }
+    [menu
+        addAction:
+            [UIAlertAction
+                actionWithTitle:
+                    [bundle localizedTwitterStringForKey:
+                                @"CANCEL_ACTION_LABEL"]
+                         style:UIAlertActionStyleCancel
+                       handler:nil]];
+    UIPopoverPresentationController* popover =
+        menu.popoverPresentationController;
+    if (popover) {
+        popover.sourceView = self.imageView;
+        popover.sourceRect =
+            CGRectMake(self.mediaActionSourcePoint.x,
+                       self.mediaActionSourcePoint.y, 1, 1);
+    }
+    [self presentViewController:menu animated:YES completion:nil];
+}
+
 - (UIView*)viewForZoomingInScrollView:(UIScrollView*)scrollView {
     return self.item.videoURL ? nil : self.imageView;
 }
@@ -630,7 +996,8 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
 @end
 
 @interface BHTMediaPagerController : UIViewController <UIPageViewControllerDataSource,
-                                                        UIPageViewControllerDelegate>
+                                                        UIPageViewControllerDelegate,
+                                                        UIGestureRecognizerDelegate>
 - (instancetype)initWithItems:(NSMutableArray<BHTLikedMediaItem*>*)items
                   initialIndex:(NSUInteger)index;
 @property(nonatomic, strong) NSMutableArray<BHTLikedMediaItem*>* items;
@@ -638,6 +1005,8 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
 @property(nonatomic) NSUInteger knownItemCount;
 @property(nonatomic, strong) UIPageViewController* pageController;
 @property(nonatomic, strong) UIButton* postButton;
+@property(nonatomic, strong) UIPanGestureRecognizer* dismissPan;
+@property(nonatomic) BOOL completingDismissal;
 @property(nonatomic, copy) dispatch_block_t loadMoreHandler;
 - (BHTMediaPageController*)pageAtIndex:(NSUInteger)index;
 - (BHTLikedMediaItem*)currentItem;
@@ -676,6 +1045,23 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
     [self.view addSubview:self.pageController.view];
     [self.pageController didMoveToParentViewController:self];
 
+    self.dismissPan =
+        [[UIPanGestureRecognizer alloc] initWithTarget:self
+                                               action:@selector(pannedDown:)];
+    self.dismissPan.maximumNumberOfTouches = 1;
+    self.dismissPan.delegate = self;
+    [self.pageController.view addGestureRecognizer:self.dismissPan];
+    for (UIView* subview in self.pageController.view.subviews) {
+        if ([subview isKindOfClass:UIScrollView.class]) {
+            // Direction is decided by dismissPan's delegate. A horizontal page
+            // swipe proceeds as soon as that recognizer fails; a vertical drag
+            // cannot move the horizontal pager underneath the dismissal.
+            [((UIScrollView*)subview).panGestureRecognizer
+                requireGestureRecognizerToFail:self.dismissPan];
+            break;
+        }
+    }
+
     BHTMediaPageController* initial = [self pageAtIndex:self.currentIndex];
     if (initial) {
         [self.pageController setViewControllers:@[initial]
@@ -709,6 +1095,128 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
     ]];
     [self updatePostButton];
     [self requestMoreIfNeededAtIndex:self.currentIndex];
+}
+
+- (BHTMediaPageController*)visibleMediaPage {
+    UIViewController* visible =
+        self.pageController.viewControllers.firstObject;
+    return [visible isKindOfClass:BHTMediaPageController.class]
+               ? (BHTMediaPageController*)visible
+               : nil;
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer*)gestureRecognizer {
+    if (gestureRecognizer != self.dismissPan || self.completingDismissal ||
+        self.presentedViewController) {
+        return gestureRecognizer != self.dismissPan;
+    }
+    BHTMediaPageController* visible = [self visibleMediaPage];
+    if (visible.scrollView.zoomScale >
+        visible.scrollView.minimumZoomScale + 0.01) {
+        return NO;
+    }
+    CGPoint velocity =
+        [(UIPanGestureRecognizer*)gestureRecognizer velocityInView:self.view];
+    return velocity.y > 0 && fabs(velocity.y) > fabs(velocity.x) * 1.2;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer*)gestureRecognizer
+    shouldRecognizeSimultaneouslyWithGestureRecognizer:
+        (UIGestureRecognizer*)otherGestureRecognizer {
+    if (gestureRecognizer != self.dismissPan &&
+        otherGestureRecognizer != self.dismissPan) {
+        return NO;
+    }
+    UIGestureRecognizer* other =
+        gestureRecognizer == self.dismissPan ? otherGestureRecognizer
+                                             : gestureRecognizer;
+    BHTMediaPageController* visible = [self visibleMediaPage];
+    return other == visible.scrollView.panGestureRecognizer &&
+           visible.scrollView.zoomScale <=
+               visible.scrollView.minimumZoomScale + 0.01;
+}
+
+- (void)restoreAfterCancelledDismissal {
+    [UIView animateWithDuration:0.24
+                          delay:0
+         usingSpringWithDamping:0.86
+          initialSpringVelocity:0
+                        options:UIViewAnimationOptionCurveEaseOut |
+                                UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{
+        self.pageController.view.transform = CGAffineTransformIdentity;
+        self.pageController.view.alpha = 1;
+        self.postButton.transform = CGAffineTransformIdentity;
+        self.postButton.alpha = 1;
+    }
+                     completion:nil];
+}
+
+- (void)pannedDown:(UIPanGestureRecognizer*)pan {
+    CGFloat translation =
+        MAX(0, [pan translationInView:self.view].y);
+    CGFloat height = MAX(1, CGRectGetHeight(self.view.bounds));
+
+    if (pan.state == UIGestureRecognizerStateChanged) {
+        CGFloat progress = MIN(1, translation / (height * 0.72));
+        self.pageController.view.transform =
+            CGAffineTransformMakeTranslation(0, translation);
+        self.pageController.view.alpha = 1 - progress * 0.58;
+        self.postButton.transform =
+            CGAffineTransformMakeTranslation(0, translation);
+        self.postButton.alpha = 1 - progress * 0.72;
+        return;
+    }
+
+    if (pan.state == UIGestureRecognizerStateCancelled ||
+        pan.state == UIGestureRecognizerStateFailed) {
+        [self restoreAfterCancelledDismissal];
+        return;
+    }
+    if (pan.state != UIGestureRecognizerStateEnded) return;
+
+    CGFloat velocity = [pan velocityInView:self.view].y;
+    CGFloat distanceThreshold =
+        MIN(180, MAX(110, height * 0.18));
+    BOOL shouldDismiss =
+        translation >= distanceThreshold ||
+        (translation >= 45 && velocity >= 900);
+    if (!shouldDismiss) {
+        [self restoreAfterCancelledDismissal];
+        return;
+    }
+
+    self.completingDismissal = YES;
+    self.view.userInteractionEnabled = NO;
+    CGFloat remainingDistance = MAX(0, height - translation);
+    CGFloat dismissalDestination = MAX(height, translation + 80);
+    NSTimeInterval duration =
+        MAX(0.12, MIN(0.28, remainingDistance / MAX(velocity, 1200)));
+    [UIView animateWithDuration:duration
+                          delay:0
+                        options:UIViewAnimationOptionCurveEaseIn |
+                                UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{
+        self.pageController.view.transform =
+            CGAffineTransformMakeTranslation(0, dismissalDestination);
+        self.pageController.view.alpha = 0;
+        self.postButton.transform =
+            CGAffineTransformMakeTranslation(0, dismissalDestination);
+        self.postButton.alpha = 0;
+    }
+                     completion:^(__unused BOOL finished) {
+        UINavigationController* navigation = self.navigationController;
+        if (navigation &&
+            [navigation.viewControllers containsObject:self]) {
+            [navigation popViewControllerAnimated:NO];
+        } else if (self.presentingViewController) {
+            [self dismissViewControllerAnimated:NO completion:nil];
+        } else {
+            self.completingDismissal = NO;
+            self.view.userInteractionEnabled = YES;
+            [self restoreAfterCancelledDismissal];
+        }
+    }];
 }
 
 - (BHTMediaPageController*)pageAtIndex:(NSUInteger)index {
@@ -849,14 +1357,19 @@ static NSCache<NSURL*, UIImage*>* BHTMediaImageCache(void) {
 @property(nonatomic, weak) BHTMediaPagerController* activeMediaPager;
 @property(nonatomic) BOOL requestedMore;
 @property(nonatomic) BOOL needsInitialTopReset;
-@property(nonatomic) BOOL hasBeenActivated;
-@property(nonatomic) NSUInteger initialResetGeneration;
+@property(nonatomic) BOOL initialResetMayRearm;
+@property(nonatomic, strong) CADisplayLink* initialResetDisplayLink;
+@property(nonatomic) CFTimeInterval initialResetDeadline;
+@property(nonatomic) CFTimeInterval initialResetHardDeadline;
 @property(nonatomic) NSUInteger loadRequestGeneration;
 - (void)ingestSections:(NSArray*)sections;
 - (void)loadMoreMedia;
 - (void)resetToNewest;
 - (void)activateForFirstPresentation;
 - (void)configureWaterfallInterface;
+- (void)invalidateInitialResetDisplayLink;
+- (void)cancelInitialResetGuard;
+- (void)startInitialResetDisplayLinkIfNeeded;
 @end
 
 static void BHTFindVerticalScrollView(UIView* view, UIScrollView** best,
@@ -902,6 +1415,7 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
 }
 
 - (void)dealloc {
+    [self.initialResetDisplayLink invalidate];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
@@ -990,11 +1504,93 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
     [self activateForFirstPresentation];
 }
 
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    // The guard is strictly a first-presentation tool. Switching tabs or
+    // opening the media viewer must freeze the current reading position.
+    [self cancelInitialResetGuard];
+}
+
 - (void)activateForFirstPresentation {
-    self.hasBeenActivated = YES;
     if (!self.needsInitialTopReset) return;
     self.needsInitialTopReset = NO;
     [self resetToNewest];
+}
+
+- (void)invalidateInitialResetDisplayLink {
+    [self.initialResetDisplayLink invalidate];
+    self.initialResetDisplayLink = nil;
+}
+
+- (void)cancelInitialResetGuard {
+    self.initialResetMayRearm = NO;
+    [self invalidateInitialResetDisplayLink];
+}
+
+- (void)startInitialResetDisplayLinkIfNeeded {
+    if (self.initialResetDisplayLink || !self.initialResetMayRearm) return;
+    self.initialResetDisplayLink =
+        [CADisplayLink displayLinkWithTarget:self
+                                    selector:
+            @selector(enforceInitialNewestPosition:)];
+    self.initialResetDisplayLink.preferredFramesPerSecond = 30;
+    [self.initialResetDisplayLink
+        addToRunLoop:NSRunLoop.mainRunLoop
+             forMode:NSRunLoopCommonModes];
+}
+
+- (void)enforceInitialNewestPosition:
+    (__unused CADisplayLink*)displayLink {
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now >= self.initialResetHardDeadline) {
+        [self cancelInitialResetGuard];
+        return;
+    }
+    if (now >= self.initialResetDeadline) {
+        // Keep the one-shot eligible to rearm when the first real Activity
+        // History sections arrive after a slow network response.
+        [self invalidateInitialResetDisplayLink];
+        return;
+    }
+
+    [self.postsController.view layoutIfNeeded];
+    UIScrollView* nativeScroll =
+        BHTFindScrollableView(self.postsController.view);
+    UIPanGestureRecognizer* nativePan =
+        nativeScroll.panGestureRecognizer;
+    BOOL userInteracting =
+        nativeScroll &&
+        (nativeScroll.dragging || nativeScroll.tracking ||
+         (nativePan.numberOfTouches > 0 &&
+          (nativePan.state == UIGestureRecognizerStateBegan ||
+           nativePan.state == UIGestureRecognizerStateChanged)));
+    if (userInteracting) {
+        [self cancelInitialResetGuard];
+        return;
+    }
+
+    if (nativeScroll) {
+        if (![objc_getAssociatedObject(nativePan,
+                                       &kBHTInitialResetPanMarkerKey)
+                boolValue]) {
+            [nativePan addTarget:self
+                          action:@selector(cancelInitialResetFromPan:)];
+            objc_setAssociatedObject(nativePan,
+                                     &kBHTInitialResetPanMarkerKey, @YES,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        CGFloat top = -nativeScroll.adjustedContentInset.top;
+        [nativeScroll
+            setContentOffset:CGPointMake(nativeScroll.contentOffset.x, top)
+                    animated:NO];
+    }
+    if (self.collectionView) {
+        CGFloat top = -self.collectionView.adjustedContentInset.top;
+        [self.collectionView
+            setContentOffset:
+                CGPointMake(self.collectionView.contentOffset.x, top)
+                    animated:NO];
+    }
 }
 
 - (void)resetToNewest {
@@ -1004,79 +1600,32 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
     }
     BHTIncrementLikesDiagnostic(@"topResets");
 
-    // Activity History restores a private child scroll view during several
-    // delayed layout passes. Retry only during the first presentation of this
-    // app-session controller. A user pan cancels the remaining retries, so
-    // leaving and returning to Likes preserves the exact reading position.
-    NSUInteger generation = ++self.initialResetGeneration;
-    __weak typeof(self) weakSelf = self;
-    void (^resetOffsets)(void) = ^{
-        typeof(self) strongSelf = weakSelf;
-        if (!strongSelf ||
-            strongSelf.initialResetGeneration != generation) {
-            return;
-        }
-        [strongSelf.postsController.view layoutIfNeeded];
-        UIScrollView* nativeScroll =
-            BHTFindScrollableView(strongSelf.postsController.view);
-        BOOL userInteracting =
-            nativeScroll &&
-            (nativeScroll.dragging || nativeScroll.tracking ||
-             nativeScroll.panGestureRecognizer.state ==
-                 UIGestureRecognizerStateBegan ||
-             nativeScroll.panGestureRecognizer.state ==
-                 UIGestureRecognizerStateChanged);
-        if (userInteracting) {
-            strongSelf.initialResetGeneration++;
-            return;
-        }
-        if (nativeScroll) {
-            if (![objc_getAssociatedObject(
-                    nativeScroll.panGestureRecognizer,
-                    &kBHTInitialResetPanMarkerKey) boolValue]) {
-                [nativeScroll.panGestureRecognizer
-                    addTarget:strongSelf
-                       action:@selector(cancelInitialResetFromPan:)];
-                objc_setAssociatedObject(
-                    nativeScroll.panGestureRecognizer,
-                    &kBHTInitialResetPanMarkerKey, @YES,
-                    OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-            CGFloat top = -nativeScroll.adjustedContentInset.top;
-            [nativeScroll setContentOffset:
-                CGPointMake(nativeScroll.contentOffset.x, top) animated:NO];
-        }
-        if (strongSelf.collectionView) {
-            CGFloat top = -strongSelf.collectionView.adjustedContentInset.top;
-            [strongSelf.collectionView setContentOffset:
-                CGPointMake(strongSelf.collectionView.contentOffset.x, top)
-                                             animated:NO];
-        }
-    };
-    // Apply the first offset synchronously so the restored middle position
-    // never reaches the screen. A few short retries cover Activity History's
-    // immediate layout churn without holding a spinner over the timeline or
-    // changing the position after the user has started reading.
-    resetOffsets();
-    NSArray<NSNumber*>* delays = @[@50, @150, @300];
-    for (NSNumber* delay in delays) {
-        dispatch_after(
-            dispatch_time(DISPATCH_TIME_NOW,
-                          delay.longLongValue * NSEC_PER_MSEC),
-            dispatch_get_main_queue(), ^{
-                resetOffsets();
-            });
-    }
+    // X 12.9 restores Activity History's private content offset after several
+    // asynchronous layout/data passes. Clamp it to the newest item during the
+    // first presentation only, without hiding the timeline or showing a
+    // loading cover. The first real user pan or leaving this controller ends
+    // the guard immediately, so later tab visits retain the exact position.
+    [self invalidateInitialResetDisplayLink];
+    CFTimeInterval now = CACurrentMediaTime();
+    self.initialResetMayRearm = YES;
+    self.initialResetDeadline = now + 2.5;
+    self.initialResetHardDeadline = now + 15.0;
+    [self startInitialResetDisplayLinkIfNeeded];
+    [self enforceInitialNewestPosition:nil];
 }
 
 - (void)cancelInitialResetFromPan:(UIPanGestureRecognizer*)pan {
-    if (pan.state == UIGestureRecognizerStateBegan ||
-        pan.state == UIGestureRecognizerStateChanged) {
-        self.initialResetGeneration++;
+    if (pan.numberOfTouches > 0 &&
+        (pan.state == UIGestureRecognizerStateBegan ||
+         pan.state == UIGestureRecognizerStateChanged)) {
+        [self cancelInitialResetGuard];
     }
 }
 
 - (void)selectionChanged:(UISegmentedControl*)sender {
+    // Changing the view is an explicit user action. Stop the first-open clamp
+    // before Media pagination scrolls the hidden native timeline to its cursor.
+    [self cancelInitialResetGuard];
     BOOL media = sender.selectedSegmentIndex == 1;
     // Keep the native Likes timeline alive behind the opaque media grid. X
     // pauses pagination for hidden controller views, which previously forced
@@ -1099,6 +1648,19 @@ static UIScrollView* BHTFindScrollableView(UIView* view) {
 }
 
 - (void)ingestSections:(NSArray*)sections {
+    if (sections.count > 0 && self.initialResetMayRearm &&
+        self.view.window &&
+        CACurrentMediaTime() < self.initialResetHardDeadline) {
+        // X may deliver/restores its Activity History content well after
+        // viewWillAppear. Clamp for a short period after every first-load
+        // section update so a slow response still lands on the newest Like.
+        CFTimeInterval extendedDeadline = CACurrentMediaTime() + 1.5;
+        self.initialResetDeadline =
+            MIN(self.initialResetHardDeadline,
+                MAX(self.initialResetDeadline, extendedDeadline));
+        [self startInitialResetDisplayLinkIfNeeded];
+        [self enforceInitialNewestPosition:nil];
+    }
     NSArray* incoming = BHTMediaItemsFromSections(sections);
     if (incoming.count == 0) {
         self.loadRequestGeneration++;

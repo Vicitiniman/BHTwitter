@@ -35,7 +35,8 @@ Flags (required):
 Options:
   -h, --help     Show this help
 
-Branding (name/icons) is applied separately with rebrand.sh on a built IPA.
+Sideloaded and TrollStore builds use the Twitter display name and include the
+selectable classic Twitter bird icon. rebrand.sh can apply other theme packs.
 EOF
 }
 
@@ -114,6 +115,12 @@ validate_runtime_linkage() {
   fi
 }
 
+apply_sideload_branding() {
+  local ipa="$SCRIPT_DIR/packages/com.atebits.Tweetie2.ipa"
+  local icon="$SCRIPT_DIR/branding/TwitterAppIcon.png"
+  bash "$SCRIPT_DIR/rebrand.sh" --twitter-branding --twitter-icon "$icon" "$ipa"
+}
+
 # The ffmpeg stack is built from source, not tracked.
 if [[ ! -f "$SCRIPT_DIR/deps/ffmpeg-kit-next/build/lib/libffmpegkit.a" ]]; then
   say "ffmpeg libraries not found; building them from source (this takes a while)."
@@ -131,6 +138,7 @@ case "$MODE" in
     fi
     if [[ -e ./packages/com.atebits.Tweetie2.ipa ]]; then
       say "Building the IPA."
+      apply_sideload_branding
       if command -v cyan >/dev/null 2>&1; then
         BHT_DYLIB="$(find_build_artifact BHTwitter.dylib)"
         validate_runtime_linkage "$BHT_DYLIB"
@@ -164,6 +172,7 @@ case "$MODE" in
     fi
     if [[ -e ./packages/com.atebits.Tweetie2.ipa ]]; then
       say "Merging NeoFreeBird to provided Twitter IPA."
+      apply_sideload_branding
       if command -v cyan >/dev/null 2>&1; then
         BHT_DYLIB="$(find_build_artifact BHTwitter.dylib)"
         validate_runtime_linkage "$BHT_DYLIB"

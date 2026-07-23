@@ -4,6 +4,7 @@
 //
 
 #import "HookHelpers.h"
+#import "MediaActions/BHTMediaActionUtility.h"
 
 static char kBHTVideoDownloadMediaKey;
 static char kBHTVideoDownloadHandlerKey;
@@ -93,12 +94,19 @@ static TFSTwitterEntityMedia* BHTMediaEntityFromInlineView(id inlineView) {
     return BHTIsDownloadableVideoEntity(media) ? media : nil;
 }
 
-static NSArray* BHTVideoEntitiesFromStatus(id status) {
+static BOOL BHTLooksLikeMediaEntity(id object) {
+    return object &&
+           [object respondsToSelector:@selector(mediaType)] &&
+           ([object respondsToSelector:@selector(mediaURL)] ||
+            [object respondsToSelector:@selector(videoInfo)]);
+}
+
+static NSArray* BHTMediaEntitiesFromStatus(id status) {
     NSMutableArray* results = [NSMutableArray array];
     NSMutableSet* seen = [NSMutableSet set];
     void (^appendMedia)(NSArray*) = ^(NSArray* mediaEntities) {
         for (id media in mediaEntities) {
-            if (!BHTIsDownloadableVideoEntity(media)) continue;
+            if (!BHTLooksLikeMediaEntity(media)) continue;
             NSValue* identity =
                 [NSValue valueWithNonretainedObject:media];
             if ([seen containsObject:identity]) continue;
@@ -107,6 +115,9 @@ static NSArray* BHTVideoEntitiesFromStatus(id status) {
         }
     };
 
+    if (BHTLooksLikeMediaEntity(status)) {
+        appendMedia(@[status]);
+    }
     id nestedStatus = BHTObjectForSelector(status, @selector(status));
     NSArray* sources =
         nestedStatus && nestedStatus != status ? @[status, nestedStatus]
@@ -123,6 +134,80 @@ static NSArray* BHTVideoEntitiesFromStatus(id status) {
         }
     }
     return [results copy];
+}
+
+static NSArray* BHTMergedMediaEntities(id firstSource, id secondSource) {
+    NSMutableArray* merged = [NSMutableArray array];
+    NSMutableSet* seen = [NSMutableSet set];
+    for (id source in @[firstSource ?: NSNull.null,
+                        secondSource ?: NSNull.null]) {
+        if (source == NSNull.null) continue;
+
+        NSArray* entities = BHTMediaEntitiesFromStatus(source);
+        for (id media in entities) {
+            NSValue* identity =
+                [NSValue valueWithNonretainedObject:media];
+            if ([seen containsObject:identity]) continue;
+            [seen addObject:identity];
+            [merged addObject:media];
+        }
+    }
+    return [merged copy];
+}
+
+static NSArray* BHTActionTargetMediaEntities(id shareableEntity, id status) {
+    // Player/photo menus normally pass the tapped media (or a wrapper
+    // containing only that media) as shareableEntity. Keep that primary target
+    // isolated so a video elsewhere in a mixed-media status cannot turn a
+    // tapped photo's menu into the Video menu. Tweet-level overflow menus fall
+    // back to the full status collection and retain the existing multi-item
+    // picker behavior.
+    if (BHTLooksLikeMediaEntity(shareableEntity)) {
+        return @[shareableEntity];
+    }
+    NSArray* primary = BHTMediaEntitiesFromStatus(shareableEntity);
+    if (primary.count == 1) {
+        return primary;
+    }
+    return BHTMergedMediaEntities(shareableEntity, status);
+}
+
+static NSArray* BHTVideoEntitiesFromStatus(id status) {
+    NSMutableArray* videos = [NSMutableArray array];
+    for (id media in BHTMediaEntitiesFromStatus(status)) {
+        if (BHTIsDownloadableVideoEntity(media)) {
+            [videos addObject:media];
+        }
+    }
+    return [videos copy];
+}
+
+static NSArray* BHTVideoEntitiesFromMediaEntities(NSArray* mediaEntities) {
+    NSMutableArray* videos = [NSMutableArray array];
+    for (id media in mediaEntities) {
+        if (BHTIsDownloadableVideoEntity(media)) {
+            [videos addObject:media];
+        }
+    }
+    return [videos copy];
+}
+
+static BOOL BHTMediaEntityLooksLikeGIF(id media) {
+    if ([media respondsToSelector:@selector(mediaType)] &&
+        ((TFSTwitterEntityMedia*)media).mediaType == 2) {
+        return YES;
+    }
+    id videoInfo = BHTObjectForSelector(media, @selector(videoInfo));
+    for (id variant in
+         BHTObjectForSelector(videoInfo, @selector(variants))) {
+        NSString* rawURL = BHTObjectForSelector(variant, @selector(url));
+        if ([rawURL containsString:@"/tweet_video/"]) {
+            return YES;
+        }
+    }
+    NSString* primaryURL =
+        BHTObjectForSelector(videoInfo, @selector(primaryUrl));
+    return [primaryURL containsString:@"/tweet_video/"];
 }
 
 static NSURL* BHTPreferredDownloadURL(TFSTwitterEntityMedia* media) {
@@ -571,8 +656,10 @@ static NSArray* DMVideoEntities(UIView* attachmentView) {
 
 // MARK: - Tweet video download
 
-// _t1_actionItemsForStatus:... is a category method on UIViewController, so the
-// hook has to land on the base class to cover every share/action sheet.
+// X 12.9 builds the media menu containing com.twitter.activity.DownloadVideo,
+// TweetVideo, ReactWithVideo, AddVideoToOffline, and Share Via in this
+// UIViewController(TFNTwitterStatus) category method. Hook the base class so
+// photo, video, and GIF sheets all get the same configurable action pipeline.
 %hook UIViewController
 - (NSArray*)_t1_actionItemsForStatus:(__unsafe_unretained id)status
                              account:(__unsafe_unretained id)account
@@ -583,14 +670,27 @@ static NSArray* DMVideoEntities(UIView* attachmentView) {
                      scribeComponent:(__unsafe_unretained id)scribeComponent
                            doneBlock:(__unsafe_unretained id)doneBlock {
     NSArray* origItems = %orig;
-
-    if (![BHTSettings boolForKey:@"download_videos"]) {
+    NSArray* allMediaEntities =
+        BHTActionTargetMediaEntities(shareableEntity, status);
+    if (allMediaEntities.count == 0) {
         return origItems;
     }
 
-    NSArray* mediaEntities = BHTVideoEntitiesFromStatus(status);
-    if (mediaEntities.count == 0) {
-        return origItems;
+    NSArray* mediaEntities =
+        BHTVideoEntitiesFromMediaEntities(allMediaEntities);
+    BOOL isGIF = mediaEntities.count > 0 &&
+                 BHTMediaEntityLooksLikeGIF(mediaEntities.firstObject);
+    BHTMediaActionKind mediaKind = mediaEntities.count == 0
+                                       ? BHTMediaActionKindPhoto
+                                       : (isGIF ? BHTMediaActionKindGIF
+                                                : BHTMediaActionKindVideo);
+    NSMutableArray* newItems =
+        origItems ? [origItems mutableCopy] : [NSMutableArray array];
+
+    BOOL isPhoto = mediaEntities.count == 0;
+    if (!isPhoto &&
+        ![BHTSettings boolForKey:@"download_videos"]) {
+        return BHTMediaActionApplyPreferences(newItems, mediaKind);
     }
 
     static char downloaderKey;
@@ -601,15 +701,55 @@ static NSArray* DMVideoEntities(UIView* attachmentView) {
     }
 
     TFNActionItem* downloadItem = [%c(TFNActionItem)
-        actionItemWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"DOWNLOAD_VIDEOS_TITLE"]
+        actionItemWithTitle:
+            [[BHTBundle sharedBundle]
+                localizedStringForKey:
+                    isPhoto ? @"MEDIA_ACTION_DOWNLOAD_PHOTO_MENU_TITLE"
+                            : (isGIF
+                                   ? @"MEDIA_ACTION_DOWNLOAD_GIF_MENU_TITLE"
+                                   : @"MEDIA_ACTION_DOWNLOAD_VIDEO_MENU_TITLE")]
                   imageName:@"arrow_down_circle_stroke"
                      action:^{
-                         [downloader presentDownloadOptionsForMediaEntities:mediaEntities];
+                         if (isPhoto) {
+                             [downloader
+                                 downloadOriginalPhotoMediaEntities:
+                                     allMediaEntities];
+                         } else {
+                             [downloader
+                                 presentDownloadOptionsForMediaEntities:
+                                     mediaEntities];
+                         }
                      }];
+    BHTMediaActionSetIdentifier(
+        downloadItem, BHTMediaActionDownloadIdentifier);
 
-    NSMutableArray* newItems = origItems ? [origItems mutableCopy] : [NSMutableArray array];
+    TFNActionItem* shareFileItem = [%c(TFNActionItem)
+        actionItemWithTitle:
+            [[BHTBundle sharedBundle]
+                localizedStringForKey:
+                    isPhoto
+                        ? @"MEDIA_ACTION_SHARE_PHOTO_FILE_MENU_TITLE"
+                        : (isGIF
+                               ? @"MEDIA_ACTION_SHARE_GIF_FILE_MENU_TITLE"
+                               : @"MEDIA_ACTION_SHARE_VIDEO_FILE_MENU_TITLE")]
+                  imageName:@"share_stroke_bold"
+                     action:^{
+                         if (isPhoto) {
+                             [downloader
+                                 shareOriginalPhotoMediaEntities:
+                                     allMediaEntities];
+                         } else {
+                             [downloader
+                                 shareHighestQualityMediaEntities:
+                                     mediaEntities];
+                         }
+                     }];
+    BHTMediaActionSetIdentifier(
+        shareFileItem, BHTMediaActionShareFileIdentifier);
+
     NSUInteger insertIndex = newItems.count > 0 ? newItems.count - 1 : 0;
     [newItems insertObject:downloadItem atIndex:insertIndex];
-    return newItems;
+    [newItems insertObject:shareFileItem atIndex:insertIndex + 1];
+    return BHTMediaActionApplyPreferences(newItems, mediaKind);
 }
 %end

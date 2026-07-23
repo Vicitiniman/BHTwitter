@@ -153,6 +153,11 @@ static NSDictionary<NSString*, NSDictionary*>* BHTSettingsPages(void) {
                 @"subtitleKey": @"MODERN_SETTINGS_MEDIA_SUBTITLE",
                 @"settings": @[
                     @{
+                        @"titleKey": @"MEDIA_ACTION_MENU_EDITOR_TITLE",
+                        @"action": @"showMediaActionMenus:",
+                        @"type": @"button"
+                    },
+                    @{
                         @"key": @"download_videos",
                         @"default": @YES,
                         @"type": @"toggle"

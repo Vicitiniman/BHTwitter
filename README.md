@@ -12,6 +12,9 @@ X 12.9.
   highest-video preference.
 - Modern video/GIF downloads across X 12.9's timeline, carousel, player-menu,
   overflow-menu, and supported Direct Message paths.
+- Native photo/video/GIF menus with working Download and temporary-file Share
+  actions, plus separate tap-to-hide and drag-to-reorder editors for each media
+  type.
 - Native tab reordering plus an independent, movable **My Likes** bottom
   destination that can sit alongside Grok, with normal in-tab navigation and
   swipe-back.
@@ -19,14 +22,17 @@ X 12.9.
   sidebar, with tap-to-hide tiles and drag reordering.
 - A Posts/Media view for Likes with a pinch-adjustable waterfall gallery,
   newest-first loading, continuous pagination, original-quality photo viewing,
-  and highest-available MP4 playback.
+  highest-available MP4 playback, long-press photo Download/Share, and
+  swipe-down dismissal.
+- Sideloaded and TrollStore builds install with the **Twitter** display name and
+  include the supplied classic bird as a selectable app icon.
 - Updated profile, search, Grok, timeline, confirmation, appearance, branding,
   custom-font, and accessibility-related features.
 - A runtime compatibility report that can be shared from the Debug settings.
 
-Beta 11 retargets X 12.9's separate video/carousel views, repairs GIF
-conversion, applies sidebar changes through its observable Swift data-source
-setters, and removes the first-open Likes loading cover.
+Beta 12 adds customizable native media menus and file-only sharing, hardens the
+first-open Likes reset while preserving later reading position, expands the
+waterfall viewer gestures, and adds the selectable Twitter bird/name branding.
 
 Every new X 12.9 behavior has a setting; custom navigation is controlled from
 its editor. Compatibility shims preserve native behavior when their option is
@@ -63,7 +69,11 @@ run one of:
 ./build.sh --rootfull
 ```
 
-The FFmpeg stack is built from source on first use and reused afterward.
+The FFmpeg stack is built from source on first use and reused afterward. macOS
+uses `sips` to generate alternate-icon sizes; Linux IPA builds need
+ImageMagick's `magick` or `convert` command.
+Sideloaded/TrollStore output is branded during packaging; reinstall or update
+the app before judging the new display name or alternate icon list.
 
 ## Build with GitHub Actions
 

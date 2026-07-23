@@ -17,6 +17,15 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)presentDownloadOptionsForMediaEntities:(NSArray*)mediaEntities;
 
+// Downloads the highest-quality representation to a temporary file and opens
+// Apple's share sheet. This never writes to the Photos library on its own.
+- (void)shareHighestQualityMediaEntities:(NSArray*)mediaEntities;
+
+// Photo counterparts used by X's native media action sheet. Download writes
+// the original-quality image to Photos; Share only exposes a temporary file.
+- (void)downloadOriginalPhotoMediaEntities:(NSArray*)mediaEntities;
+- (void)shareOriginalPhotoMediaEntities:(NSArray*)mediaEntities;
+
 @end
 
 NS_ASSUME_NONNULL_END
